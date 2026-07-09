@@ -98,12 +98,28 @@ def create_client(args: argparse.Namespace) -> DefaultFIDOClient:
 
 
 def cmd_start(args: argparse.Namespace) -> None:
+    from virtual_fido.usb import USBDeviceConfig
+
     client = create_client(args)
+    device_config = USBDeviceConfig(
+        id_vendor=args.vendor_id,
+        id_product=args.product_id,
+        bcd_device=args.bcd_device,
+        manufacturer=args.manufacturer,
+        product=args.product,
+        serial_number=args.serial_number,
+    )
     print(f"Serving USB/IP on {args.bind}:{args.port}")
+    print(
+        f"Device identity: {device_config.manufacturer} {device_config.product}"
+        f" ({device_config.id_vendor:04x}:{device_config.id_product:04x})"
+    )
     print("Attach from the client machine (Linux):")
     print("  sudo modprobe vhci-hcd")
     print(f"  sudo usbip attach -r {args.bind} -b 2-2")
-    virtual_fido.start(client, bind_address=args.bind, port=args.port)
+    virtual_fido.start(
+        client, bind_address=args.bind, port=args.port, device_config=device_config
+    )
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -166,6 +182,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    def hex_int(value: str) -> int:
+        return int(value, 0)  # accepts 0x1050 as well as decimal
+
     start_parser = subparsers.add_parser("start", help="Attach virtual FIDO device")
     start_parser.add_argument(
         "--bind",
@@ -173,6 +192,19 @@ def main(argv: Optional[list[str]] = None) -> None:
         help="Address to bind (use the tunnel interface IP for remote use)",
     )
     start_parser.add_argument("--port", type=int, default=3240)
+    identity = start_parser.add_argument_group(
+        "device identity", "USB identity announced to the host (defaults: YubiKey 5)"
+    )
+    identity.add_argument("--vendor-id", type=hex_int, default=0x1050, metavar="0x1050")
+    identity.add_argument("--product-id", type=hex_int, default=0x0407, metavar="0x0407")
+    identity.add_argument("--bcd-device", type=hex_int, default=0x0574, metavar="0x0574")
+    identity.add_argument("--manufacturer", default="Yubico")
+    identity.add_argument("--product", default="YubiKey OTP+FIDO+CCID")
+    identity.add_argument(
+        "--serial-number",
+        default=None,
+        help="Serial number string (omitted entirely by default, like a real YubiKey)",
+    )
     start_parser.set_defaults(func=cmd_start)
 
     list_parser = subparsers.add_parser("list", help="List identities in vault")

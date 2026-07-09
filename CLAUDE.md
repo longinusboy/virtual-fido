@@ -14,25 +14,25 @@ Go→Python module map and conventions.
 
 ## Commands
 
+This project uses [`uv`](https://docs.astral.sh/uv/) — never pip/venv directly.
+
 ```bash
 # From python/ — set up once
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e '.[dev]'
+uv sync
 
 # Test
-pytest                       # whole suite (~70 tests, ~2s)
-pytest tests/test_ctap.py    # one module
-pytest -k pin_set            # one test by name expression
+uv run pytest                       # whole suite (~75 tests, ~2s)
+uv run pytest tests/test_ctap.py    # one module
+uv run pytest -k pin_set            # one test by name expression
 
 # Run the demo server (insecure demo keys — testing only)
-virtual-fido-demo --vault vault.json --passphrase pw start --bind 127.0.0.1
-python -m virtual_fido.skeleton -v      # transport-only walking skeleton
+uv run virtual-fido-demo --vault vault.json --passphrase pw start --bind 127.0.0.1
+uv run python -m virtual_fido.skeleton -v      # transport-only walking skeleton
 ```
 
-There is no live `usbip attach` on the primary dev machine (its kernel lacks
-the usbip tools/modules). Verify behavior through the test suite and the
-in-process full-stack integration test instead; do real attach tests on a
-stock-kernel Linux box or VM.
+Live `usbip attach` works on this machine (the user fixed the kernel tools)
+but needs sudo, so the test suite doesn't exercise it — ask the user to run
+attach tests, or hand them the commands (see README "Run"/"Detach").
 
 ## Architecture
 
@@ -42,6 +42,8 @@ Same server stack as the Go version — each layer wraps the next. `virtual_fido
 ```
 USBIPServer (usbip.py)       TCP, USB/IP protocol; bind address configurable
   └─ USBDevice (usb.py)      USB descriptors + HID interface + endpoint buffering
+     (identity via USBDeviceConfig — defaults announce a YubiKey 5:
+      1050:0407, bcdDevice 5.74, "Yubico" / "YubiKey OTP+FIDO+CCID", no serial)
       └─ CTAPHIDServer (ctap_hid.py)   packets → transactions → channels; keepalives
           ├─ CTAPServer (ctap.py)      FIDO2/CTAP2 (CBOR via cbor2)
           └─ U2FServer (u2f.py)        U2F/CTAP1

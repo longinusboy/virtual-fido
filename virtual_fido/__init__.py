@@ -20,18 +20,24 @@ from __future__ import annotations
 __version__ = "0.1.0"
 
 
-def start(client, bind_address: str = "127.0.0.1", port: int = 3240) -> None:
+def start(
+    client,
+    bind_address: str = "127.0.0.1",
+    port: int = 3240,
+    device_config=None,
+) -> None:
     """Wire the full server stack and serve USB/IP (blocking).
 
     `client` must implement both the CTAP2 and U2F client interfaces —
-    see fido_client.DefaultFIDOClient. Equivalent of Go's
-    virtual_fido.Start/startClient.
+    see fido_client.DefaultFIDOClient. `device_config` is an optional
+    usb.USBDeviceConfig controlling the USB identity the host sees
+    (defaults to a YubiKey 5). Equivalent of Go's virtual_fido.Start.
     """
     from . import ctap, ctap_hid, u2f, usb, usbip
 
     ctap_server = ctap.CTAPServer(client)
     u2f_server = u2f.U2FServer(client)
     ctap_hid_server = ctap_hid.CTAPHIDServer(ctap_server, u2f_server)
-    device = usb.USBDevice(ctap_hid_server)
+    device = usb.USBDevice(ctap_hid_server, config=device_config)
     server = usbip.USBIPServer([device], bind_address=bind_address, port=port)
     server.start()

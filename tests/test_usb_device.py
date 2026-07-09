@@ -87,7 +87,8 @@ def test_get_configuration():
 
 def test_get_string_descriptors():
     device = usb.USBDevice(DummyDelegate())
-    for index in range(5):
+    # Default YubiKey identity announces language, manufacturer and product
+    for index in range(3):
         setup = usb.USBSetupPacket.make(
             b_request=usb.REQUEST_GET_DESCRIPTOR,
             w_value=(usb.DESCRIPTOR_STRING << 8) | index,
@@ -97,6 +98,70 @@ def test_get_string_descriptors():
         assert cstring_to_str(response + b"\x00") != ""
         assert response[0] == len(response)
         assert response[1] == usb.DESCRIPTOR_STRING
+
+
+def test_string_descriptor_contents():
+    device = usb.USBDevice(DummyDelegate())
+
+    def get_string(index):
+        setup = usb.USBSetupPacket.make(
+            b_request=usb.REQUEST_GET_DESCRIPTOR,
+            w_value=(usb.DESCRIPTOR_STRING << 8) | index,
+            w_length=255,
+        )
+        return _control_response(device, setup)[2:].decode("utf-16-le")
+
+    assert get_string(1) == "Yubico"
+    assert get_string(2) == "YubiKey OTP+FIDO+CCID"
+
+
+def test_device_descriptor_yubikey_identity():
+    """Default identity matches a real YubiKey 5 enumeration:
+    idVendor=1050, idProduct=0407, bcdDevice=5.74, Mfr=1, Product=2, SerialNumber=0."""
+    device = usb.USBDevice(DummyDelegate())
+    setup = usb.USBSetupPacket.make(
+        b_request=usb.REQUEST_GET_DESCRIPTOR,
+        w_value=usb.DESCRIPTOR_DEVICE << 8,
+        w_length=64,
+    )
+    response = _control_response(device, setup)
+    id_vendor, id_product, bcd_device = struct.unpack("<HHH", response[8:14])
+    i_manufacturer, i_product, i_serial = response[14], response[15], response[16]
+    assert id_vendor == 0x1050
+    assert id_product == 0x0407
+    assert bcd_device == 0x0574
+    assert (i_manufacturer, i_product, i_serial) == (1, 2, 0)
+
+
+def test_custom_device_config():
+    config = usb.USBDeviceConfig(
+        id_vendor=0x1234,
+        id_product=0x5678,
+        bcd_device=0x0100,
+        manufacturer="ACME",
+        product="Virtual Key",
+        serial_number="12345",
+    )
+    device = usb.USBDevice(DummyDelegate(), config=config)
+    setup = usb.USBSetupPacket.make(
+        b_request=usb.REQUEST_GET_DESCRIPTOR,
+        w_value=usb.DESCRIPTOR_DEVICE << 8,
+        w_length=64,
+    )
+    response = _control_response(device, setup)
+    assert struct.unpack("<HHH", response[8:14]) == (0x1234, 0x5678, 0x0100)
+    assert response[16] == 3  # serial number string present at index 3
+    serial_setup = usb.USBSetupPacket.make(
+        b_request=usb.REQUEST_GET_DESCRIPTOR,
+        w_value=(usb.DESCRIPTOR_STRING << 8) | 3,
+        w_length=255,
+    )
+    assert _control_response(device, serial_setup)[2:].decode("utf-16-le") == "12345"
+    # USB/IP summary announces the same identity
+    summary = device.device_summary()
+    assert summary.header.id_vendor == 0x1234
+    assert summary.header.id_product == 0x5678
+    assert summary.header.bcd_device == 0x0100
 
 
 def test_get_hid_report():

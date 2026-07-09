@@ -28,10 +28,12 @@ two machines and bind the server to the tunnel interface.
 
 ## Install (machine B)
 
+Uses [`uv`](https://docs.astral.sh/uv/) for environment and dependency
+management:
+
 ```bash
 cd python
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e .
+uv sync
 ```
 
 Requires Python 3.10+. Dependencies are deliberately minimal —
@@ -45,12 +47,12 @@ Start the server on machine B, bound to its tunnel address:
 
 ```bash
 # Insecure demo credentials — testing only (see the warning in the CLI help)
-virtual-fido-demo --vault vault.json --passphrase secret start --bind 10.0.0.2
+uv run virtual-fido-demo --vault vault.json --passphrase secret start --bind 10.0.0.2
 
 # Vault management
-virtual-fido-demo list
-virtual-fido-demo delete --identity <hash-prefix>
-virtual-fido-demo pin enable | disable | set --pin 1234
+uv run virtual-fido-demo list
+uv run virtual-fido-demo delete --identity <hash-prefix>
+uv run virtual-fido-demo pin enable | disable | set --pin 1234
 ```
 
 Attach the device on machine A (Linux, needs root):
@@ -60,8 +62,64 @@ sudo modprobe vhci-hcd
 sudo usbip attach -r 10.0.0.2 -b 2-2
 ```
 
-The host should now enumerate a "Virtual FIDO" HID device (`lsusb`). Test it
-against the [YubiKey WebAuthn demo page](https://demo.yubico.com/webauthn-technical/registration).
+The host now enumerates the device (`lsusb`, `dmesg`) and it is usable by
+browsers. Test it against the
+[YubiKey WebAuthn demo page](https://demo.yubico.com/webauthn-technical/registration).
+
+### Detach / cleanup (machine A)
+
+When you're done (or before restarting the server), detach the imported
+device — otherwise the host keeps a stale USB port around:
+
+```bash
+# Find the vhci port the device is attached on ("Port 00", "Port 01", ...)
+sudo usbip port
+
+# Detach that port
+sudo usbip detach -p 0
+
+# Optional: unload the client driver entirely
+sudo modprobe -r vhci-hcd
+```
+
+If the server went away first, `usbip detach` may complain; unloading and
+reloading `vhci-hcd` clears any leftover state.
+
+## Device identity
+
+By default the device announces itself exactly like a YubiKey 5, matching a
+real key's kernel enumeration:
+
+```text
+usb 3-2: New USB device found, idVendor=1050, idProduct=0407, bcdDevice= 5.74
+usb 3-2: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+usb 3-2: Product: YubiKey OTP+FIDO+CCID
+usb 3-2: Manufacturer: Yubico
+```
+
+Every value is overridable — via CLI flags:
+
+```bash
+uv run virtual-fido-demo start \
+    --vendor-id 0x1050 --product-id 0x0407 --bcd-device 0x0574 \
+    --manufacturer Yubico --product "YubiKey OTP+FIDO+CCID" \
+    --serial-number 123456   # omitted entirely by default, like a real YubiKey
+```
+
+or in code with `usb.USBDeviceConfig`:
+
+```python
+from virtual_fido.usb import USBDeviceConfig
+
+config = USBDeviceConfig(id_vendor=0x1050, id_product=0x0407, bcd_device=0x0574,
+                         manufacturer="Yubico", product="YubiKey OTP+FIDO+CCID")
+virtual_fido.start(client, bind_address="10.0.0.2", device_config=config)
+```
+
+Note: only the USB identity is emulated. The device exposes a single FIDO HID
+interface — a real "OTP+FIDO+CCID" YubiKey additionally exposes keyboard (OTP)
+and smartcard (CCID) interfaces, so `lsusb -v` output will differ in the
+interface list even though enumeration strings match.
 
 ### Example WireGuard tunnel
 
@@ -99,8 +157,7 @@ registrations/logins are approved and how the encrypted vault is stored.
 ## Tests
 
 ```bash
-pip install -e '.[dev]'
-pytest
+uv run pytest
 ```
 
 The suite ports the Go unit tests and adds a full-stack integration test that
@@ -108,7 +165,6 @@ drives HID packets through the entire server (USB → CTAPHID → CTAP2/U2F →
 client). Vault files are format-compatible with the Go implementation, verified
 by a golden vault in `tests/data/`.
 
-> **Live `usbip attach` is not exercised by the test suite** — it needs the
-> kernel `vhci-hcd` module and `usbip` userspace tools on the test machine.
-> Run the manual attach steps above on a stock-kernel Linux box to verify the
-> transport end to end.
+Live `usbip attach` is not exercised by the test suite (it needs the
+`vhci-hcd` kernel module, `usbip` userspace tools and root); use the manual
+attach steps above to verify the transport end to end.

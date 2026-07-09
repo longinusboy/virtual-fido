@@ -97,13 +97,31 @@ HID_REPORT_DESCRIPTOR = bytes(
      9, 33, 20, 37, 255, 117, 8, 149, 64, 145, 2, 192]
 )
 
-_STRING_DESCRIPTORS = {
-    1: "No Company",
-    2: "Virtual FIDO",
-    3: "No Serial Number",
-    4: "String 4",
-    5: "Default Interface",
-}
+
+@dataclass
+class USBDeviceConfig:
+    """Identity the virtual device announces to the host.
+
+    Defaults mimic a YubiKey 5 (OTP+FIDO+CCID), as enumerated by the kernel:
+
+        usb 3-2: New USB device found, idVendor=1050, idProduct=0407, bcdDevice= 5.74
+        usb 3-2: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+        usb 3-2: Product: YubiKey OTP+FIDO+CCID
+        usb 3-2: Manufacturer: Yubico
+
+    Every field can be overridden to present a different identity. A string
+    field set to None omits that string descriptor entirely (a real YubiKey
+    announces no serial number: SerialNumber=0 above).
+    """
+
+    id_vendor: int = 0x1050
+    id_product: int = 0x0407
+    bcd_device: int = 0x0574
+    manufacturer: Optional[str] = "Yubico"
+    product: Optional[str] = "YubiKey OTP+FIDO+CCID"
+    serial_number: Optional[str] = None
+    configuration_name: Optional[str] = None
+    interface_name: Optional[str] = None
 
 
 @dataclass
@@ -169,10 +187,28 @@ class USBDeviceDelegate(Protocol):
 class USBDevice:
     """The virtual FIDO USB device exposed through USB/IP."""
 
-    def __init__(self, delegate: USBDeviceDelegate) -> None:
+    def __init__(
+        self, delegate: USBDeviceDelegate, config: Optional[USBDeviceConfig] = None
+    ) -> None:
         self._delegate = delegate
+        self._config = config or USBDeviceConfig()
         self._request_buffer = RequestBuffer()
+        # String descriptor indexes are assigned in order over the strings
+        # that are actually present; absent strings get index 0 ("none").
+        self._strings: dict[int, str] = {}
+        self._i_manufacturer = self._add_string(self._config.manufacturer)
+        self._i_product = self._add_string(self._config.product)
+        self._i_serial_number = self._add_string(self._config.serial_number)
+        self._i_configuration = self._add_string(self._config.configuration_name)
+        self._i_interface = self._add_string(self._config.interface_name)
         delegate.set_response_handler(self._request_buffer.respond)
+
+    def _add_string(self, value: Optional[str]) -> int:
+        if value is None:
+            return 0
+        index = len(self._strings) + 1
+        self._strings[index] = value
+        return index
 
     # ------------------------------------------------------------------
     # usbip.USBIPDevice interface
@@ -191,6 +227,9 @@ class USBDevice:
                 busnum=2,
                 devnum=2,
                 speed=2,
+                id_vendor=self._config.id_vendor,
+                id_product=self._config.id_product,
+                bcd_device=self._config.bcd_device,
             ),
             device_interface=usbip.USBIPDeviceInterface(
                 b_interface_class=INTERFACE_CLASS_HID, b_interface_subclass=0
@@ -305,12 +344,12 @@ class USBDevice:
             0,  # bDeviceSubclass
             0,  # bDeviceProtocol
             64,  # bMaxPacketSize
-            0,  # idVendor
-            0,  # idProduct
-            0x1,  # bcdDevice
-            1,  # iManufacturer
-            2,  # iProduct
-            3,  # iSerialNumber
+            self._config.id_vendor,
+            self._config.id_product,
+            self._config.bcd_device,
+            self._i_manufacturer,
+            self._i_product,
+            self._i_serial_number,
             1,  # bNumConfigurations
         )
 
@@ -328,7 +367,7 @@ class USBDevice:
             _CONFIGURATION_DESCRIPTOR.size + len(inner),  # wTotalLength
             1,  # bNumInterfaces
             0,  # bConfigurationValue
-            4,  # iConfiguration
+            self._i_configuration,
             CONFIG_ATTRIBUTE_BASE | CONFIG_ATTRIBUTE_SELF_POWERED,  # bmAttributes
             0,  # bMaxPower
         )
@@ -344,7 +383,7 @@ class USBDevice:
             INTERFACE_CLASS_HID,  # bInterfaceClass
             0,  # bInterfaceSubclass
             0,  # bInterfaceProtocol
-            5,  # iInterface
+            self._i_interface,
         )
 
     def _hid_descriptor(self) -> bytes:
@@ -377,6 +416,6 @@ class USBDevice:
         if index == 0:
             return struct.pack("<H", LANG_ID_ENG_USA)
         try:
-            return utf16_encode(_STRING_DESCRIPTORS[index])
+            return utf16_encode(self._strings[index])
         except KeyError:
             raise ProtocolError(f"Invalid string descriptor index: {index}") from None
