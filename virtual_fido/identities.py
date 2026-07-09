@@ -27,10 +27,30 @@ from .webauthn import (
     PublicKeyCredentialUserEntity,
 )
 
-_SCRYPT_N = 32768
+# Vault blob versions:
+#   v1 — Go-compatible: scrypt(N=32768) -> AES-GCM key wrap, no version field.
+#        Read-only for backward compatibility.
+#   v2 — current: stronger scrypt, KDF parameters stored in the blob, and an
+#        optional keyfile mixed into the KDF via HKDF so an attacker needs
+#        vault + keyfile + passphrase, not just the vault file.
+_VAULT_VERSION = 2
+
+_SCRYPT_N_V1 = 32768
+# The vault is opened once at startup, so a few hundred ms of KDF is cheap.
+_SCRYPT_N_V2 = 131072
 _SCRYPT_R = 8
 _SCRYPT_P = 1
 _SCRYPT_KEY_LENGTH = 32
+_HKDF_INFO = b"virtual-fido vault v2"
+
+# Sanity caps when honoring KDF parameters from a (possibly hostile) blob,
+# so a crafted vault file can't demand gigabytes of KDF memory.
+_SCRYPT_MAX_N = 2**22
+_SCRYPT_MAX_R = 32
+_SCRYPT_MAX_P = 16
+
+KEYFILE_SIZE = 32
+_KEYFILE_MIN_SIZE = 16
 
 
 def _b64(data: bytes) -> str:
@@ -162,27 +182,70 @@ class FIDODeviceConfig:
     sources: list[dict] = field(default_factory=list)
 
 
-def _derive_key_encryption_key(passphrase: str, salt: bytes) -> bytes:
+class VaultDecryptionError(Exception):
+    """The vault could not be decrypted (wrong passphrase/keyfile, missing
+    keyfile, or corrupted file)."""
+
+
+def _scrypt(passphrase: str, salt: bytes, n: int, r: int, p: int) -> bytes:
     return hashlib.scrypt(
         passphrase.encode(),
         salt=salt,
-        n=_SCRYPT_N,
-        r=_SCRYPT_R,
-        p=_SCRYPT_P,
+        n=n,
+        r=r,
+        p=p,
         dklen=_SCRYPT_KEY_LENGTH,
-        maxmem=128 * _SCRYPT_N * _SCRYPT_R * 2,
+        maxmem=128 * n * r * 2,
     )
 
 
-def encrypt_with_passphrase(passphrase: str, data: bytes) -> bytes:
-    """scrypt(passphrase) wraps a fresh random key which encrypts the data
-    (PassphraseEncryptedBlob)."""
+def _derive_kek_v2(
+    passphrase: str, salt: bytes, n: int, r: int, p: int, keyfile: Optional[bytes]
+) -> bytes:
+    """v2 key-encryption key: HKDF over scrypt(passphrase) plus the keyfile.
+
+    The keyfile is a second, independent secret: without it the KDF output
+    cannot be brute-forced from the vault file alone.
+    """
+    from cryptography.hazmat.primitives.hashes import SHA256
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    ikm = _scrypt(passphrase, salt, n, r, p) + (keyfile or b"")
+    return HKDF(
+        algorithm=SHA256(), length=_SCRYPT_KEY_LENGTH, salt=salt, info=_HKDF_INFO
+    ).derive(ikm)
+
+
+def _check_keyfile(keyfile: Optional[bytes]) -> None:
+    if keyfile is not None and len(keyfile) < _KEYFILE_MIN_SIZE:
+        raise ValueError(f"Keyfile must be at least {_KEYFILE_MIN_SIZE} bytes")
+
+
+def generate_keyfile() -> bytes:
+    """Fresh keyfile material; store it on separate media from the vault."""
+    return crypto.random_bytes(KEYFILE_SIZE)
+
+
+def encrypt_with_passphrase(
+    passphrase: str, data: bytes, keyfile: Optional[bytes] = None
+) -> bytes:
+    """Encrypt to the current (v2) vault blob format.
+
+    scrypt(passphrase) — mixed with the keyfile when one is configured —
+    wraps a fresh random key which encrypts the data.
+    """
+    _check_keyfile(keyfile)
     salt = crypto.random_bytes(16)
-    key_encryption_key = _derive_key_encryption_key(passphrase, salt)
+    key_encryption_key = _derive_kek_v2(
+        passphrase, salt, _SCRYPT_N_V2, _SCRYPT_R, _SCRYPT_P, keyfile
+    )
     encryption_key = crypto.generate_symmetric_key()
     encrypted_key, key_nonce = crypto.encrypt(key_encryption_key, encryption_key)
     encrypted_data, data_nonce = crypto.encrypt(encryption_key, data)
     blob = {
+        "version": _VAULT_VERSION,
+        "kdf": {"name": "scrypt", "n": _SCRYPT_N_V2, "r": _SCRYPT_R, "p": _SCRYPT_P},
+        "keyfile": keyfile is not None,
         "salt": _b64(salt),
         "encryption_key": _b64(encrypted_key),
         "key_nonce": _b64(key_nonce),
@@ -192,18 +255,61 @@ def encrypt_with_passphrase(passphrase: str, data: bytes) -> bytes:
     return json.dumps(blob).encode()
 
 
-def decrypt_with_passphrase(passphrase: str, data: bytes) -> bytes:
-    blob = json.loads(data)
-    key_encryption_key = _derive_key_encryption_key(passphrase, _unb64(blob["salt"]))
-    encryption_key = crypto.decrypt(
-        key_encryption_key, _unb64(blob["encryption_key"]), _unb64(blob["key_nonce"])
-    )
-    return crypto.decrypt(
-        encryption_key, _unb64(blob["encrypted_data"]), _unb64(blob["data_nonce"])
-    )
+def decrypt_with_passphrase(
+    passphrase: str, data: bytes, keyfile: Optional[bytes] = None
+) -> bytes:
+    """Decrypt a vault blob: current v2 format, or legacy v1 (Go-compatible,
+    identified by the absence of a version field)."""
+    _check_keyfile(keyfile)
+    try:
+        blob = json.loads(data)
+        version = blob.get("version", 1)
+        salt = _unb64(blob["salt"])
+    except (ValueError, KeyError, TypeError) as err:
+        raise VaultDecryptionError(f"Vault file is not a valid vault blob: {err}") from err
+
+    if version == 1:
+        # Keyfiles did not exist in v1; ignore one if supplied so a v1 vault
+        # opened with a newly configured keyfile still loads (the next save
+        # rewrites it as v2 with the keyfile mixed in).
+        key_encryption_key = _scrypt(passphrase, salt, _SCRYPT_N_V1, _SCRYPT_R, _SCRYPT_P)
+    elif version == 2:
+        kdf = blob.get("kdf", {})
+        n, r, p = kdf.get("n", 0), kdf.get("r", 0), kdf.get("p", 0)
+        if (
+            kdf.get("name") != "scrypt"
+            or not (0 < n <= _SCRYPT_MAX_N and (n & (n - 1)) == 0)
+            or not (0 < r <= _SCRYPT_MAX_R)
+            or not (0 < p <= _SCRYPT_MAX_P)
+        ):
+            raise VaultDecryptionError(f"Unsupported vault KDF parameters: {kdf}")
+        if blob.get("keyfile"):
+            if keyfile is None:
+                raise VaultDecryptionError(
+                    "This vault is protected by a keyfile; provide it (--keyfile)"
+                )
+        else:
+            keyfile = None
+        key_encryption_key = _derive_kek_v2(passphrase, salt, n, r, p, keyfile)
+    else:
+        raise VaultDecryptionError(f"Unsupported vault version: {version}")
+
+    try:
+        encryption_key = crypto.decrypt(
+            key_encryption_key, _unb64(blob["encryption_key"]), _unb64(blob["key_nonce"])
+        )
+        return crypto.decrypt(
+            encryption_key, _unb64(blob["encrypted_data"]), _unb64(blob["data_nonce"])
+        )
+    except Exception as err:
+        raise VaultDecryptionError(
+            "Could not decrypt vault: wrong passphrase or keyfile"
+        ) from err
 
 
-def encrypt_fido_state(state: FIDODeviceConfig, passphrase: str) -> bytes:
+def encrypt_fido_state(
+    state: FIDODeviceConfig, passphrase: str, keyfile: Optional[bytes] = None
+) -> bytes:
     obj = {
         "encryption_key": _b64(state.encryption_key),
         "attestation_certificate": _b64(state.attestation_certificate),
@@ -216,11 +322,13 @@ def encrypt_fido_state(state: FIDODeviceConfig, passphrase: str) -> bytes:
         obj["pin_enabled"] = True
     if state.pin_hash:
         obj["pin_hash"] = _b64(state.pin_hash)
-    return encrypt_with_passphrase(passphrase, json.dumps(obj).encode())
+    return encrypt_with_passphrase(passphrase, json.dumps(obj).encode(), keyfile)
 
 
-def decrypt_fido_state(data: bytes, passphrase: str) -> FIDODeviceConfig:
-    obj = json.loads(decrypt_with_passphrase(passphrase, data))
+def decrypt_fido_state(
+    data: bytes, passphrase: str, keyfile: Optional[bytes] = None
+) -> FIDODeviceConfig:
+    obj = json.loads(decrypt_with_passphrase(passphrase, data, keyfile))
     return FIDODeviceConfig(
         encryption_key=_unb64(obj.get("encryption_key")),
         attestation_certificate=_unb64(obj.get("attestation_certificate")),

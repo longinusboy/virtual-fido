@@ -46,8 +46,9 @@ auditable.
 Start the server on machine B, bound to its tunnel address:
 
 ```bash
-# Insecure demo credentials — testing only (see the warning in the CLI help)
-uv run virtual-fido-demo --vault vault.json --passphrase secret start --bind 10.0.0.2
+# Prompts for the vault passphrase; see "Vault security" for --passphrase-file
+# and --keyfile. (Demo attestation keys are testing-only — see CLI help.)
+uv run virtual-fido-demo --vault vault.json start --bind 10.0.0.2
 
 # Vault management
 uv run virtual-fido-demo list
@@ -84,6 +85,38 @@ sudo modprobe -r vhci-hcd
 
 If the server went away first, `usbip detach` may complain; unloading and
 reloading `vhci-hcd` clears any leftover state.
+
+## Vault security
+
+The vault file is what an attacker wants, so it is protected in layers:
+
+- **Encryption at rest**: the vault is JSON encrypted with AES-256-GCM; the
+  key is wrapped by a key derived from your passphrase with scrypt
+  (N=2¹⁷, ~130 MiB memory-hard — parameters are stored in the file, and
+  vaults written by the Go implementation still open).
+- **Passphrase input**: interactive prompt by default, or
+  `--passphrase-file <path>` for services. `--passphrase` on the command line
+  works but warns (visible in the process list). **Environment variables are
+  deliberately not supported** — they leak through `/proc/<pid>/environ`,
+  shell history and unit files, which are prime info-stealer targets.
+- **Keyfile (second secret, recommended)**: with `--keyfile`, a random
+  32-byte file is mixed into the key derivation. An attacker then needs the
+  vault, the keyfile *and* the passphrase. Keep the keyfile on separate media
+  from the vault (USB stick, different mount):
+
+  ```bash
+  uv run virtual-fido-demo --keyfile /media/usb/vault.key generate-keyfile
+  uv run virtual-fido-demo --vault vault.json --keyfile /media/usb/vault.key start
+  ```
+
+  An existing vault adopts the keyfile automatically on its next save; from
+  then on it cannot be opened without it — **losing the keyfile means losing
+  the vault**, so back it up (separately from the vault).
+
+Honest limits: while the server is running, decrypted keys are in process
+memory, and Python cannot reliably zero them — an attacker who can read the
+server process's memory wins regardless of file encryption. Keep machine B
+minimal and don't browse on it; that's the point of the two-machine split.
 
 ## Device identity
 

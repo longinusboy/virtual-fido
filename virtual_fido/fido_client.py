@@ -51,7 +51,13 @@ class ClientRequestApprover(Protocol):
 
 
 class ClientDataSaver(Protocol):
-    """Persists the encrypted vault and provides its passphrase."""
+    """Persists the encrypted vault and provides its passphrase.
+
+    Implementations may additionally expose `keyfile() -> Optional[bytes]`
+    to mix a second secret into the vault KDF — an attacker then needs the
+    vault file, the keyfile AND the passphrase. Store the keyfile on
+    separate media from the vault (USB stick, different mount, ...).
+    """
 
     def save_data(self, data: bytes) -> None: ...
 
@@ -214,7 +220,11 @@ class DefaultFIDOClient:
     # Persistence
     # ------------------------------------------------------------------
 
-    def export_data(self, passphrase: str) -> bytes:
+    def _keyfile(self) -> Optional[bytes]:
+        getter = getattr(self._data_saver, "keyfile", None)
+        return getter() if callable(getter) else None
+
+    def export_data(self, passphrase: str, keyfile: Optional[bytes] = None) -> bytes:
         state = FIDODeviceConfig(
             encryption_key=self._device_encryption_key,
             attestation_certificate=self._certificate_authority.public_bytes(
@@ -226,10 +236,12 @@ class DefaultFIDOClient:
             pin_hash=self._pin_hash or b"",
             sources=self.vault.export(),
         )
-        return identities.encrypt_fido_state(state, passphrase)
+        return identities.encrypt_fido_state(state, passphrase, keyfile)
 
-    def import_data(self, data: bytes, passphrase: str) -> None:
-        state = identities.decrypt_fido_state(data, passphrase)
+    def import_data(
+        self, data: bytes, passphrase: str, keyfile: Optional[bytes] = None
+    ) -> None:
+        state = identities.decrypt_fido_state(data, passphrase, keyfile)
         certificate = x509.load_der_x509_certificate(state.attestation_certificate)
         try:
             private_key = cose.unmarshal_cose_private_key(state.attestation_private_key)
@@ -251,12 +263,14 @@ class DefaultFIDOClient:
         self.vault.import_sources(state.sources)
 
     def _save_data(self) -> None:
-        self._data_saver.save_data(self.export_data(self._data_saver.passphrase()))
+        self._data_saver.save_data(
+            self.export_data(self._data_saver.passphrase(), self._keyfile())
+        )
 
     def _load_data(self) -> None:
         data = self._data_saver.retrieve_data()
         if data:
-            self.import_data(data, self._data_saver.passphrase())
+            self.import_data(data, self._data_saver.passphrase(), self._keyfile())
 
     # ------------------------------------------------------------------
     # Vault management (for CLIs/embedders)

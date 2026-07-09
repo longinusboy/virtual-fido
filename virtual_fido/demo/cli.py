@@ -13,8 +13,10 @@ encryption key, default passphrase. Do not copy into real deployments.
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -40,9 +42,15 @@ def _prompt(message: str) -> bool:
 class TerminalSupport:
     """Terminal approver + file-based vault storage (demo ClientSupport)."""
 
-    def __init__(self, vault_filename: str, vault_passphrase: str) -> None:
+    def __init__(
+        self,
+        vault_filename: str,
+        vault_passphrase: str,
+        keyfile: Optional[bytes] = None,
+    ) -> None:
         self._vault_path = Path(vault_filename)
         self._passphrase = vault_passphrase
+        self._keyfile = keyfile
 
     # ClientRequestApprover
     def approve_client_action(
@@ -74,9 +82,37 @@ class TerminalSupport:
     def passphrase(self) -> str:
         return self._passphrase
 
+    def keyfile(self) -> Optional[bytes]:
+        return self._keyfile
+
+
+def resolve_passphrase(args: argparse.Namespace) -> str:
+    """--passphrase (discouraged) > --passphrase-file > interactive prompt.
+
+    Environment variables are deliberately NOT supported: they leak through
+    /proc/<pid>/environ, shell history and service manager configs — prime
+    targets for info stealers.
+    """
+    if args.passphrase is not None:
+        print(
+            "WARNING: --passphrase is visible in the process list and shell"
+            " history; prefer --passphrase-file or the interactive prompt.",
+            file=sys.stderr,
+        )
+        return args.passphrase
+    if args.passphrase_file is not None:
+        return Path(args.passphrase_file).read_text().strip("\n")
+    return getpass.getpass("Vault passphrase: ")
+
+
+def load_keyfile(args: argparse.Namespace) -> Optional[bytes]:
+    if args.keyfile is None:
+        return None
+    return Path(args.keyfile).read_bytes()
+
 
 def create_client(args: argparse.Namespace) -> DefaultFIDOClient:
-    # ALL OF THIS IS INSECURE, FOR TESTING PURPOSES ONLY
+    # The CA and encryption key below are INSECURE, FOR TESTING PURPOSES ONLY
     ca_private_key = identities.create_ca_private_key()
     certificate_authority = identities.create_self_signed_ca(ca_private_key)
     encryption_key = hashlib.sha256(b"test").digest()
@@ -86,7 +122,7 @@ def create_client(args: argparse.Namespace) -> DefaultFIDOClient:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
         stream=sys.stdout,
     )
-    support = TerminalSupport(args.vault, args.passphrase)
+    support = TerminalSupport(args.vault, resolve_passphrase(args), load_keyfile(args))
     return DefaultFIDOClient(
         attestation_ca_certificate=certificate_authority,
         attestation_ca_private_key=ca_private_key,
@@ -163,6 +199,19 @@ def cmd_pin_disable(args: argparse.Namespace) -> None:
     print("PIN disabled")
 
 
+def cmd_generate_keyfile(args: argparse.Namespace) -> None:
+    if args.keyfile is None:
+        print("Provide the target path with --keyfile", file=sys.stderr)
+        sys.exit(1)
+    # 0600 and no-overwrite: losing an in-use keyfile means losing the vault
+    fd = os.open(args.keyfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(identities.generate_keyfile())
+    print(f"Keyfile written to {args.keyfile}")
+    print("Store it on separate media from the vault; without it the vault")
+    print("cannot be decrypted. Existing vaults adopt it on their next save.")
+
+
 def cmd_pin_set(args: argparse.Namespace) -> None:
     pin = str(args.pin)
     if args.pin < 0 or len(pin) < 4:
@@ -178,7 +227,23 @@ def main(argv: Optional[list[str]] = None) -> None:
         description="Run a virtual FIDO2 device for logging in with WebAuthn",
     )
     parser.add_argument("--vault", default="vault.json", help="Identity vault filename")
-    parser.add_argument("--passphrase", default="passphrase", help="Identity vault passphrase")
+    parser.add_argument(
+        "--passphrase",
+        default=None,
+        help="Vault passphrase (DISCOURAGED: visible in process list;"
+        " prefer --passphrase-file or the interactive prompt)",
+    )
+    parser.add_argument(
+        "--passphrase-file",
+        default=None,
+        help="Read the vault passphrase from this file (trailing newline stripped)",
+    )
+    parser.add_argument(
+        "--keyfile",
+        default=None,
+        help="Second vault secret: path to a keyfile (see generate-keyfile)."
+        " Keep it on separate media from the vault.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -214,6 +279,12 @@ def main(argv: Optional[list[str]] = None) -> None:
     delete_parser.add_argument("--identity", required=True, help="Identity hash prefix to delete")
     delete_parser.set_defaults(func=cmd_delete)
 
+    keyfile_parser = subparsers.add_parser(
+        "generate-keyfile",
+        help="Create a new keyfile at the path given by --keyfile",
+    )
+    keyfile_parser.set_defaults(func=cmd_generate_keyfile)
+
     pin_parser = subparsers.add_parser("pin", help="Modify PIN behavior")
     pin_subparsers = pin_parser.add_subparsers(dest="pin_command", required=True)
     pin_subparsers.add_parser("enable", help="Enable PIN protection").set_defaults(
@@ -227,7 +298,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     pin_set_parser.set_defaults(func=cmd_pin_set)
 
     args = parser.parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except identities.VaultDecryptionError as err:
+        print(f"Error: {err}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -66,10 +66,12 @@ state), `webauthn.py` (shared structs with CBOR + JSON serializations),
   positive cert serial numbers, and no RSA/no `LogLevelUnsafe`.
 - **Minimal dependencies** (`cryptography`, `cbor2`) — do not add more without
   a strong reason; auditability is the point of the rewrite.
-- **Vault file format is compatible with the Go version.** `tests/data/go_vault.json`
-  is a golden vault written by Go and decrypted in `test_identities.py`; keep
-  it working. When touching `identities.py`/`webauthn.py` serialization,
-  re-verify cross-language interop.
+- **Vault format is versioned.** v1 = Go-compatible (read-only;
+  `tests/data/go_vault.json` is a Go-written golden vault — keep it opening).
+  v2 = current write format: scrypt N=2¹⁷ with parameters stored in the blob,
+  plus an optional keyfile mixed into the KDF via HKDF (second secret; see
+  README "Vault security"). Passphrases come from a prompt or file, never env
+  vars. Any format change needs a new version, a migration path, and tests.
 - **Wire formats use `struct` with explicit endianness.** USB/IP headers are
   big-endian; USB descriptors little-endian; CTAPHID mixes little-endian
   channel/command with big-endian payload length. Match the Go `ToLE`/`ToBE`

@@ -16,7 +16,7 @@ the Windows/Linux USB/IP clients).
 | `u2f/`        | `virtual_fido/u2f.py`       | U2F / CTAP1. |
 | `cose/`       | `virtual_fido/cose.py`      | COSE key (ES256) encode/decode. |
 | `crypto/`     | `virtual_fido/crypto.py`    | ECDSA/ECDH/AES-GCM/SHA-256 via `cryptography`. |
-| `identities/` | `virtual_fido/identities.py`| Vault, attestation certs, encrypted saved state. Vault file format stays compatible with the Go version. |
+| `identities/` | `virtual_fido/identities.py`| Vault, attestation certs, encrypted saved state. Reads Go-written (v1) vaults; **saves in a v2 format Go cannot read** (stronger scrypt, KDF params in the blob, optional keyfile second secret). |
 | `fido_client/`| `virtual_fido/fido_client.py`| `DefaultFIDOClient`, approval + data-saver interfaces. |
 | `util/`       | (absorbed)                  | Endianness → `struct`/`int.to_bytes`; logging → `logging`; panics/`Try` → exceptions. |
 | `cmd/demo`    | `virtual_fido/demo/`        | argparse CLI: `start`, `list`, `delete`, `pin`. |
