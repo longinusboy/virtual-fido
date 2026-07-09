@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "virtual-fido"
+version = "0.1.0"
+description = "Virtual FIDO2/U2F security key exposed as a USB device over USB/IP (Python port of bulwarkid/virtual-fido)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "cryptography>=42.0",
+    "cbor2>=5.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+virtual-fido-demo = "virtual_fido.demo.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["virtual_fido*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

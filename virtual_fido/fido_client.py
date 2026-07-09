@@ -1,0 +1,272 @@
+"""Default FIDO client: credential storage, approvals and PIN state.
+
+Port of the Go fido_client/ package. This is the piece embedders customize:
+`DefaultFIDOClient` implements both the CTAP2 and U2F client interfaces, and
+delegates user approval and vault persistence to two small interfaces.
+"""
+
+from __future__ import annotations
+
+import enum
+import logging
+from dataclasses import dataclass
+from typing import Optional, Protocol
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from . import cose, crypto, identities
+from .identities import CredentialSource, FIDODeviceConfig, IdentityVault
+from .webauthn import (
+    KeyHandle,
+    PublicKeyCredentialDescriptor,
+    PublicKeyCredentialParams,
+    PublicKeyCredentialRPEntity,
+    PublicKeyCredentialUserEntity,
+)
+
+logger = logging.getLogger("virtual_fido.client")
+
+
+class ClientAction(enum.IntEnum):
+    U2F_REGISTER = 0
+    U2F_AUTHENTICATE = 1
+    FIDO_MAKE_CREDENTIAL = 2
+    FIDO_GET_ASSERTION = 3
+
+
+@dataclass
+class ClientActionRequestParams:
+    relying_party: str = ""
+    user_name: str = ""
+
+
+class ClientRequestApprover(Protocol):
+    """Approves or denies each registration/login (terminal prompt, UI, ...)."""
+
+    def approve_client_action(
+        self, action: ClientAction, params: ClientActionRequestParams
+    ) -> bool: ...
+
+
+class ClientDataSaver(Protocol):
+    """Persists the encrypted vault and provides its passphrase."""
+
+    def save_data(self, data: bytes) -> None: ...
+
+    def retrieve_data(self) -> Optional[bytes]: ...
+
+    def passphrase(self) -> str: ...
+
+
+class DefaultFIDOClient:
+    """Reference implementation of the CTAP2 + U2F client interfaces
+    (fido_client.DefaultFIDOClient)."""
+
+    def __init__(
+        self,
+        attestation_ca_certificate: x509.Certificate,
+        attestation_ca_private_key: cose.COSEPrivateKey,
+        secret_encryption_key: bytes,
+        enable_pin: bool,
+        request_approver: ClientRequestApprover,
+        data_saver: ClientDataSaver,
+    ) -> None:
+        assert len(secret_encryption_key) == 32
+        self._device_encryption_key = secret_encryption_key
+        self._certificate_authority = attestation_ca_certificate
+        self._cert_private_key = attestation_ca_private_key
+        self._authentication_counter = 1
+        self._pin_enabled = enable_pin
+        self._pin_token = crypto.random_bytes(16)
+        self._pin_key_agreement = crypto.ECDHKey()
+        self._pin_retries = 8
+        self._pin_hash: Optional[bytes] = None
+        self.vault = IdentityVault()
+        self._request_approver = request_approver
+        self._data_saver = data_saver
+        self._load_data()
+
+    # ------------------------------------------------------------------
+    # CTAP2 client interface
+    # ------------------------------------------------------------------
+
+    def supports_resident_key(self) -> bool:
+        return True
+
+    def new_credential_source(
+        self,
+        pub_key_cred_params: list[PublicKeyCredentialParams],
+        exclude_list: list[PublicKeyCredentialDescriptor],
+        relying_party: PublicKeyCredentialRPEntity,
+        user: PublicKeyCredentialUserEntity,
+    ) -> Optional[CredentialSource]:
+        if not any(
+            p.algorithm == cose.ALGORITHM_ES256 and p.type == "public-key"
+            for p in pub_key_cred_params
+        ):
+            return None
+        source = self.vault.new_identity(relying_party, user)
+        self._save_data()
+        return source
+
+    def get_assertion_source(
+        self,
+        relying_party_id: str,
+        allow_list: Optional[list[PublicKeyCredentialDescriptor]],
+    ) -> Optional[CredentialSource]:
+        sources = self.vault.get_matching_credential_sources(relying_party_id, allow_list)
+        if not sources:
+            logger.warning("No credentials for %s", relying_party_id)
+            return None
+        # TODO (inherited from Go): let the user pick between sources
+        source = sources[0]
+        source.signature_counter += 1
+        self._save_data()
+        return source
+
+    def approve_account_creation(self, relying_party: str) -> bool:
+        return self._request_approver.approve_client_action(
+            ClientAction.FIDO_MAKE_CREDENTIAL,
+            ClientActionRequestParams(relying_party=relying_party),
+        )
+
+    def approve_account_login(self, credential_source: CredentialSource) -> bool:
+        return self._request_approver.approve_client_action(
+            ClientAction.FIDO_GET_ASSERTION,
+            ClientActionRequestParams(
+                relying_party=credential_source.relying_party.name,
+                user_name=credential_source.user.name,
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # PIN management
+    # ------------------------------------------------------------------
+
+    def enable_pin(self) -> None:
+        self._pin_enabled = True
+        self._save_data()
+
+    def disable_pin(self) -> None:
+        self._pin_enabled = False
+        self._save_data()
+
+    def supports_pin(self) -> bool:
+        return self._pin_enabled
+
+    def pin_hash(self) -> Optional[bytes]:
+        return self._pin_hash
+
+    def set_pin(self, pin: bytes) -> None:
+        self.set_pin_hash(crypto.hash_sha256(pin)[:16])
+
+    def set_pin_hash(self, pin_hash: Optional[bytes]) -> None:
+        self._pin_hash = pin_hash
+        self._save_data()
+
+    def pin_retries(self) -> int:
+        assert 0 < self._pin_retries <= 8, "Invalid PIN retries"
+        return self._pin_retries
+
+    def set_pin_retries(self, retries: int) -> None:
+        self._pin_retries = retries
+
+    def pin_key_agreement(self) -> crypto.ECDHKey:
+        return self._pin_key_agreement
+
+    def pin_token(self) -> bytes:
+        return self._pin_token
+
+    # ------------------------------------------------------------------
+    # U2F client interface
+    # ------------------------------------------------------------------
+
+    def sealing_encryption_key(self) -> bytes:
+        return self._device_encryption_key
+
+    def new_private_key(self) -> ec.EllipticCurvePrivateKey:
+        return crypto.generate_ecdsa_key()
+
+    def new_authentication_counter_id(self) -> int:
+        value = self._authentication_counter
+        self._authentication_counter += 1
+        return value
+
+    def create_attestation_certificate(self, private_key: cose.COSEPrivateKey) -> bytes:
+        cert = identities.create_self_signed_attestation_certificate(
+            self._certificate_authority, self._cert_private_key, private_key
+        )
+        return cert.public_bytes(serialization.Encoding.DER)
+
+    def approve_u2f_registration(self, key_handle: KeyHandle) -> bool:
+        return self._request_approver.approve_client_action(
+            ClientAction.U2F_REGISTER, ClientActionRequestParams()
+        )
+
+    def approve_u2f_authentication(self, key_handle: KeyHandle) -> bool:
+        return self._request_approver.approve_client_action(
+            ClientAction.U2F_AUTHENTICATE, ClientActionRequestParams()
+        )
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def export_data(self, passphrase: str) -> bytes:
+        state = FIDODeviceConfig(
+            encryption_key=self._device_encryption_key,
+            attestation_certificate=self._certificate_authority.public_bytes(
+                serialization.Encoding.DER
+            ),
+            attestation_private_key=cose.marshal_cose_private_key(self._cert_private_key),
+            authentication_counter=self._authentication_counter,
+            pin_enabled=self._pin_enabled,
+            pin_hash=self._pin_hash or b"",
+            sources=self.vault.export(),
+        )
+        return identities.encrypt_fido_state(state, passphrase)
+
+    def import_data(self, data: bytes, passphrase: str) -> None:
+        state = identities.decrypt_fido_state(data, passphrase)
+        certificate = x509.load_der_x509_certificate(state.attestation_certificate)
+        try:
+            private_key = cose.unmarshal_cose_private_key(state.attestation_private_key)
+        except Exception:
+            # Vaults written by old Go versions store SEC1 EC keys
+            ecdsa_key = serialization.load_der_private_key(
+                state.attestation_private_key, None
+            )
+            if not isinstance(ecdsa_key, ec.EllipticCurvePrivateKey):
+                raise ValueError("Could not parse attestation private key")
+            private_key = cose.COSEPrivateKey(ecdsa=ecdsa_key)
+        self._device_encryption_key = state.encryption_key
+        self._certificate_authority = certificate
+        self._cert_private_key = private_key
+        self._authentication_counter = state.authentication_counter
+        self._pin_enabled = state.pin_enabled
+        self._pin_hash = state.pin_hash or None
+        self.vault = IdentityVault()
+        self.vault.import_sources(state.sources)
+
+    def _save_data(self) -> None:
+        self._data_saver.save_data(self.export_data(self._data_saver.passphrase()))
+
+    def _load_data(self) -> None:
+        data = self._data_saver.retrieve_data()
+        if data:
+            self.import_data(data, self._data_saver.passphrase())
+
+    # ------------------------------------------------------------------
+    # Vault management (for CLIs/embedders)
+    # ------------------------------------------------------------------
+
+    def identities(self) -> list[CredentialSource]:
+        return list(self.vault.credential_sources)
+
+    def delete_identity(self, credential_id: bytes) -> bool:
+        if self.vault.delete_identity(credential_id):
+            self._save_data()
+            return True
+        return False
