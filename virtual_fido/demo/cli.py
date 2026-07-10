@@ -308,6 +308,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     except identities.VaultDecryptionError as err:
         print(f"Error: {err}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        # Ctrl+C during the passphrase prompt or the server loop: exit
+        # quietly instead of dumping a traceback.
+        print()
+        sys.exit(130)  # conventional exit code for SIGINT
 
 
 if __name__ == "__main__":

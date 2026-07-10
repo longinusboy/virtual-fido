@@ -158,18 +158,25 @@ class USBIPServer:
         self._port = port
 
     def start(self) -> None:
-        """Accept connections forever (blocking)."""
+        """Accept connections until interrupted (blocking).
+
+        Returns cleanly on KeyboardInterrupt (Ctrl+C); connection threads are
+        daemons and are torn down with the process.
+        """
         logger.info("Starting USB/IP server on %s:%d", self._bind_address, self._port)
-        listener = socket.create_server(
+        with socket.create_server(
             (self._bind_address, self._port), reuse_port=False
-        )
-        while True:
-            connection, address = listener.accept()
-            logger.info("Connection from %s", address)
-            thread = threading.Thread(
-                target=_Connection(self, connection).handle, daemon=True
-            )
-            thread.start()
+        ) as listener:
+            try:
+                while True:
+                    connection, address = listener.accept()
+                    logger.info("Connection from %s", address)
+                    thread = threading.Thread(
+                        target=_Connection(self, connection).handle, daemon=True
+                    )
+                    thread.start()
+            except KeyboardInterrupt:
+                logger.info("Shutting down USB/IP server")
 
     def _get_device(self, bus_id: str) -> Optional[USBIPDevice]:
         for device in self._devices:
