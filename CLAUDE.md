@@ -51,7 +51,9 @@ USBIPServer (usbip.py)       TCP, USB/IP protocol; bind address configurable
 ```
 
 Supporting modules: `crypto.py` (ECDSA/Ed25519/AES-GCM/AES-CBC/ECDH via
-`cryptography`), `cose.py` (COSE key encode/decode, ES256 + Ed25519),
+`cryptography`), `pin_protocol.py` (PIN/UV auth protocols 1 and 2 — shared
+secret derivation, encrypt/decrypt, authenticate), `cose.py` (COSE key
+encode/decode, ES256 + Ed25519),
 `identities.py` (vault, attestation certs, scrypt+AES-GCM encrypted saved
 state), `webauthn.py` (shared structs with CBOR + JSON serializations),
 `_util.py` (`RequestBuffer`, timers, C-string helpers).
@@ -76,6 +78,14 @@ state), `webauthn.py` (shared structs with CBOR + JSON serializations),
   big-endian; USB descriptors little-endian; CTAPHID mixes little-endian
   channel/command with big-endian payload length. Match the Go `ToLE`/`ToBE`
   usage exactly.
+- **Interrupt-IN polls are held pending, never timed out.** The Go original
+  cancels an unanswered interrupt-IN poll after 1s and completes it empty;
+  that injects a bogus all-zero HID packet and creates a slow re-poll cadence
+  that races with multi-packet responses (it broke the 2-packet
+  getKeyAgreement reply during PIN entry — the host aborted mid-flow). We
+  instead leave the poll pending until CTAPHID produces data or the host
+  UNLINKs it, like a real interrupt endpoint NAKing. Don't reintroduce a
+  timeout NAK on `ENDPOINT_OUTPUT`.
 - **Concurrency uses threads + callbacks**, mirroring the Go goroutine model
   (chosen so behavior can be checked against the reference without a live
   attach). An asyncio redesign is deferred until after the transport is
@@ -83,6 +93,12 @@ state), `webauthn.py` (shared structs with CBOR + JSON serializations),
 - Protocol errors raise exceptions caught at the USB/IP connection loop
   (Go uses panic+recover at the same boundary); never let one bad packet kill
   the server.
+- **PIN goes beyond the Go reference.** The Go original only did PIN/UV auth
+  protocol 1 + legacy getPinToken and advertised FIDO_2_0. Modern browsers use
+  protocol 2 + getPinUvAuthTokenUsingPinWithPermissions (subcommand 0x09), so
+  this port advertises FIDO_2_1 + `pinUvAuthToken` + both protocols and
+  implements them (`pin_protocol.py`, `ctap.py`). PINs are strings (4–63 UTF-8
+  bytes), never parsed as integers — "0000" must survive.
 
 ## Validation approach (no live USB/IP here)
 

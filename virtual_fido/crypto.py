@@ -116,18 +116,26 @@ def hash_sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
 
 
-def encrypt_aes_cbc(key: bytes, data: bytes) -> bytes:
-    """AES-CBC with a zero IV — only correct for the CTAP PIN protocol,
-    where the plaintext is itself unpredictable (crypto.EncryptAESCBC)."""
-    cipher = Cipher(algorithms.AES(key), modes.CBC(b"\x00" * 16))
+def aes_cbc_encrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     encryptor = cipher.encryptor()
     return encryptor.update(data) + encryptor.finalize()
 
 
-def decrypt_aes_cbc(key: bytes, data: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.CBC(b"\x00" * 16))
+def aes_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     decryptor = cipher.decryptor()
     return decryptor.update(data) + decryptor.finalize()
+
+
+def encrypt_aes_cbc(key: bytes, data: bytes) -> bytes:
+    """AES-CBC with a zero IV — PIN/UV auth protocol 1, where the plaintext
+    is itself unpredictable (crypto.EncryptAESCBC)."""
+    return aes_cbc_encrypt(key, b"\x00" * 16, data)
+
+
+def decrypt_aes_cbc(key: bytes, data: bytes) -> bytes:
+    return aes_cbc_decrypt(key, b"\x00" * 16, data)
 
 
 class ECDHKey:

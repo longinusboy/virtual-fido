@@ -10,9 +10,10 @@ the Windows/Linux USB/IP clients).
 | Go package    | Python module               | Notes |
 |---------------|-----------------------------|-------|
 | `usbip/`      | `virtual_fido/usbip.py`     | USB/IP wire protocol + TCP server. Bind address is configurable (`--bind`); default `127.0.0.1`. Remote use is expected to go through a WireGuard/SSH tunnel — the server itself does no encryption. |
-| `usb/`        | `virtual_fido/usb.py`       | USB descriptors, control transfers, HID report descriptor, interrupt-endpoint buffering. |
+| `usb/`        | `virtual_fido/usb.py`       | USB descriptors, control transfers, HID report descriptor, interrupt-endpoint buffering. **Diverges from Go**: interrupt-IN polls are held pending (no 1s timeout NAK) — the Go timeout injected zero packets and broke multi-packet reassembly during PIN entry. |
 | `ctap_hid/`   | `virtual_fido/ctap_hid.py`  | Packet reassembly → transactions → channels; keepalives. |
-| `ctap/`       | `virtual_fido/ctap.py`      | CTAP2 (CBOR) command handling. |
+| `ctap/`       | `virtual_fido/ctap.py`      | CTAP2 (CBOR) command handling. **Extends Go**: PIN/UV auth protocols 1 *and* 2 + permissions-based token (subcommand 0x09), advertising FIDO_2_1, so modern browsers' PIN flow works. |
+| —             | `virtual_fido/pin_protocol.py` | PIN/UV auth protocol 1 & 2 primitives (no Go equivalent — Go only did protocol 1 inline). |
 | `u2f/`        | `virtual_fido/u2f.py`       | U2F / CTAP1. |
 | `cose/`       | `virtual_fido/cose.py`      | COSE key (ES256) encode/decode. |
 | `crypto/`     | `virtual_fido/crypto.py`    | ECDSA/ECDH/AES-GCM/SHA-256 via `cryptography`. |

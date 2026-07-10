@@ -14,7 +14,7 @@ from typing import Optional, Protocol
 
 import cbor2
 
-from . import cose, crypto
+from . import cose, crypto, pin_protocol
 from .identities import CredentialSource
 from .webauthn import (
     PublicKeyCredentialDescriptor,
@@ -63,6 +63,9 @@ PIN_SUBCOMMAND_GET_KEY_AGREEMENT = 2
 PIN_SUBCOMMAND_SET_PIN = 3
 PIN_SUBCOMMAND_CHANGE_PIN = 4
 PIN_SUBCOMMAND_GET_PIN_TOKEN = 5
+# CTAP2.1 permissions-based token requests (modern browsers use these)
+PIN_SUBCOMMAND_GET_TOKEN_USING_UV_WITH_PERMISSIONS = 6
+PIN_SUBCOMMAND_GET_TOKEN_USING_PIN_WITH_PERMISSIONS = 9
 
 
 class CTAPClient(Protocol):
@@ -185,15 +188,14 @@ class CTAPServer:
             return _status(CTAP2_ERR_UNSUPPORTED_ALGORITHM)
 
         if self._client.supports_pin():
-            if pin_uv_auth_protocol == 1 and pin_uv_auth_param is not None:
-                pin_auth = self._derive_pin_auth(self._client.pin_token(), client_data_hash)
-                if not hmac.compare_digest(pin_auth, pin_uv_auth_param):
+            if pin_uv_auth_param is not None:
+                if not self._verify_pin_uv_auth(
+                    pin_uv_auth_protocol, client_data_hash, pin_uv_auth_param
+                ):
                     return _status(CTAP2_ERR_PIN_AUTH_INVALID)
                 flags |= FLAG_USER_VERIFIED
-            elif pin_uv_auth_param is None and self._client.pin_hash() is not None:
+            elif self._client.pin_hash() is not None:
                 return _status(CTAP2_ERR_PIN_REQUIRED)
-            elif pin_uv_auth_param is not None and pin_uv_auth_protocol != 1:
-                return _status(CTAP2_ERR_PIN_AUTH_INVALID)
 
         if not self._client.approve_account_creation(rp.name):
             logger.warning("MAKE_CREDENTIAL: denied by user")
@@ -230,14 +232,20 @@ class CTAPServer:
             "rk": self._client.supports_resident_key(),
             "up": True,
         }
+        versions = ["U2F_V2", "FIDO_2_0"]
         response = {
-            1: ["FIDO_2_0", "U2F_V2"],
+            1: versions,
             3: AAGUID,
             4: options,
         }
         if self._client.supports_pin():
             options["clientPin"] = self._client.pin_hash() is not None
-            response[6] = [1]
+            # Advertise CTAP2.1 so browsers use the permissions-based token
+            # flow (getPinUvAuthTokenUsingPinWithPermissions); list both PIN
+            # protocols, most-preferred first.
+            versions.append("FIDO_2_1")
+            options["pinUvAuthToken"] = True
+            response[6] = list(pin_protocol.SUPPORTED_PROTOCOLS[::-1])  # [2, 1]
         logger.debug("GET_INFO response: %s", response)
         return _success(response)
 
@@ -265,10 +273,9 @@ class CTAPServer:
 
         flags = 0
         if self._client.supports_pin() and pin_uv_auth_param is not None:
-            if pin_uv_auth_protocol != 1:
-                return _status(CTAP2_ERR_PIN_AUTH_INVALID)
-            pin_auth = self._derive_pin_auth(self._client.pin_token(), client_data_hash)
-            if not hmac.compare_digest(pin_auth, pin_uv_auth_param):
+            if not self._verify_pin_uv_auth(
+                pin_uv_auth_protocol, client_data_hash, pin_uv_auth_param
+            ):
                 return _status(CTAP2_ERR_PIN_AUTH_INVALID)
             flags |= FLAG_USER_VERIFIED
 
@@ -295,24 +302,32 @@ class CTAPServer:
         )
 
     # ------------------------------------------------------------------
-    # ClientPIN (PIN protocol v1)
+    # ClientPIN (PIN/UV auth protocols 1 and 2)
     # ------------------------------------------------------------------
 
-    def _get_pin_shared_secret(self, key_agreement: dict) -> bytes:
+    def _shared_secret(self, protocol, key_agreement: dict) -> bytes:
         remote_x = int.from_bytes(key_agreement[-2], "big")
         remote_y = int.from_bytes(key_agreement[-3], "big")
-        return crypto.hash_sha256(
-            self._client.pin_key_agreement().ecdh(remote_x, remote_y)
+        return protocol.derive_shared_secret(
+            self._client.pin_key_agreement(), remote_x, remote_y
         )
 
-    def _derive_pin_auth(self, shared_secret: bytes, data: bytes) -> bytes:
-        return hmac.new(shared_secret, data, hashlib.sha256).digest()[:16]
+    def _verify_pin_uv_auth(
+        self, protocol_version: int, message: bytes, param: bytes
+    ) -> bool:
+        """Verify a pinUvAuthParam carried on MakeCredential/GetAssertion,
+        using the pinUvAuthToken and the protocol the platform selected."""
+        protocol = pin_protocol.get(protocol_version)
+        if protocol is None:
+            return False
+        expected = protocol.authenticate(self._client.pin_token(), message)
+        return hmac.compare_digest(expected, param)
 
     @staticmethod
-    def _decrypt_pin(shared_secret: bytes, pin_encoding: bytes) -> bytes:
-        padded = crypto.decrypt_aes_cbc(shared_secret, pin_encoding)
+    def _decrypt_pin(protocol, shared_secret: bytes, pin_encoding: bytes) -> bytes:
+        padded = protocol.decrypt(shared_secret, pin_encoding)
         index = padded.find(b"\x00")
-        return padded[:index] if index >= 0 else b""
+        return padded[:index] if index >= 0 else padded
 
     def _handle_client_pin(self, data: bytes) -> bytes:
         if not self._client.supports_pin():
@@ -321,15 +336,17 @@ class CTAPServer:
             args = cbor2.loads(data)
         except Exception:
             return _status(CTAP2_ERR_INVALID_CBOR)
-        if args.get(1) != 1:  # pinUvAuthProtocol
-            return _status(CTAP1_ERR_INVALID_PARAMETER)
+        protocol = pin_protocol.get(args.get(1))  # pinUvAuthProtocol
         subcommand = args.get(2)
         key_agreement: Optional[dict] = args.get(3)
         pin_uv_auth_param: Optional[bytes] = args.get(4)
         new_pin_encoding: Optional[bytes] = args.get(5)
         pin_hash_encoding: Optional[bytes] = args.get(6)
-        logger.debug("CLIENT_PIN subcommand=%s", subcommand)
+        logger.debug(
+            "CLIENT_PIN subcommand=%s protocol=%s", subcommand, args.get(1)
+        )
 
+        # getKeyAgreement / getRetries carry no protocol-encrypted material.
         if subcommand == PIN_SUBCOMMAND_GET_RETRIES:
             return _success({3: self._client.pin_retries()})
         if subcommand == PIN_SUBCOMMAND_GET_KEY_AGREEMENT:
@@ -345,18 +362,31 @@ class CTAPServer:
                     }
                 }
             )
+
+        if protocol is None:
+            return _status(CTAP1_ERR_INVALID_PARAMETER)
+
         if subcommand == PIN_SUBCOMMAND_SET_PIN:
-            return self._handle_set_pin(key_agreement, pin_uv_auth_param, new_pin_encoding)
+            return self._handle_set_pin(
+                protocol, key_agreement, pin_uv_auth_param, new_pin_encoding
+            )
         if subcommand == PIN_SUBCOMMAND_CHANGE_PIN:
             return self._handle_change_pin(
-                key_agreement, pin_uv_auth_param, new_pin_encoding, pin_hash_encoding
+                protocol, key_agreement, pin_uv_auth_param, new_pin_encoding, pin_hash_encoding
             )
-        if subcommand == PIN_SUBCOMMAND_GET_PIN_TOKEN:
-            return self._handle_get_pin_token(key_agreement, pin_hash_encoding)
+        if subcommand in (
+            PIN_SUBCOMMAND_GET_PIN_TOKEN,
+            PIN_SUBCOMMAND_GET_TOKEN_USING_PIN_WITH_PERMISSIONS,
+        ):
+            # Subcommand 9 adds permissions (key 9) and an optional rpId
+            # (key 10). We don't scope tokens to permissions, so we accept
+            # and ignore them — the PIN check is identical to subcommand 5.
+            return self._handle_get_pin_token(protocol, key_agreement, pin_hash_encoding)
         return _status(CTAP2_ERR_MISSING_PARAM)
 
     def _handle_set_pin(
         self,
+        protocol,
         key_agreement: Optional[dict],
         pin_uv_auth_param: Optional[bytes],
         new_pin_encoding: Optional[bytes],
@@ -365,11 +395,11 @@ class CTAPServer:
             return _status(CTAP2_ERR_PIN_AUTH_INVALID)
         if key_agreement is None or pin_uv_auth_param is None or new_pin_encoding is None:
             return _status(CTAP2_ERR_MISSING_PARAM)
-        shared_secret = self._get_pin_shared_secret(key_agreement)
-        pin_auth = self._derive_pin_auth(shared_secret, new_pin_encoding)
+        shared_secret = self._shared_secret(protocol, key_agreement)
+        pin_auth = protocol.authenticate(shared_secret, new_pin_encoding)
         if not hmac.compare_digest(pin_auth, pin_uv_auth_param):
             return _status(CTAP2_ERR_PIN_AUTH_INVALID)
-        pin = self._decrypt_pin(shared_secret, new_pin_encoding)
+        pin = self._decrypt_pin(protocol, shared_secret, new_pin_encoding)
         if len(pin) < 4:
             return _status(CTAP2_ERR_PIN_POLICY_VIOLATION)
         self._client.set_pin_retries(8)
@@ -378,6 +408,7 @@ class CTAPServer:
 
     def _handle_change_pin(
         self,
+        protocol,
         key_agreement: Optional[dict],
         pin_uv_auth_param: Optional[bytes],
         new_pin_encoding: Optional[bytes],
@@ -387,37 +418,39 @@ class CTAPServer:
             return _status(CTAP2_ERR_MISSING_PARAM)
         if self._client.pin_retries() == 0:
             return _status(CTAP2_ERR_PIN_BLOCKED)
-        shared_secret = self._get_pin_shared_secret(key_agreement)
-        pin_auth = self._derive_pin_auth(
+        shared_secret = self._shared_secret(protocol, key_agreement)
+        pin_auth = protocol.authenticate(
             shared_secret, (new_pin_encoding or b"") + (pin_hash_encoding or b"")
         )
         if not hmac.compare_digest(pin_auth, pin_uv_auth_param):
             return _status(CTAP2_ERR_PIN_AUTH_INVALID)
         self._client.set_pin_retries(self._client.pin_retries() - 1)
-        decrypted_pin_hash = crypto.decrypt_aes_cbc(shared_secret, pin_hash_encoding or b"")
+        decrypted_pin_hash = protocol.decrypt(shared_secret, pin_hash_encoding or b"")
         if not hmac.compare_digest(self._client.pin_hash() or b"", decrypted_pin_hash):
             return _status(CTAP2_ERR_PIN_INVALID)
         self._client.set_pin_retries(8)
-        new_pin = self._decrypt_pin(shared_secret, new_pin_encoding or b"")
+        new_pin = self._decrypt_pin(protocol, shared_secret, new_pin_encoding or b"")
         if len(new_pin) < 4:
             return _status(CTAP2_ERR_PIN_POLICY_VIOLATION)
         self._client.set_pin_hash(crypto.hash_sha256(new_pin)[:16])
         return _status(CTAP1_ERR_SUCCESS)
 
     def _handle_get_pin_token(
-        self, key_agreement: Optional[dict], pin_hash_encoding: Optional[bytes]
+        self, protocol, key_agreement: Optional[dict], pin_hash_encoding: Optional[bytes]
     ) -> bytes:
         if pin_hash_encoding is None or key_agreement is None:
             return _status(CTAP2_ERR_MISSING_PARAM)
+        if self._client.pin_hash() is None:
+            return _status(CTAP2_ERR_NO_PIN_SET)
         if self._client.pin_retries() <= 0:
             return _status(CTAP2_ERR_PIN_BLOCKED)
-        shared_secret = self._get_pin_shared_secret(key_agreement)
+        shared_secret = self._shared_secret(protocol, key_agreement)
         self._client.set_pin_retries(self._client.pin_retries() - 1)
-        pin_hash = crypto.decrypt_aes_cbc(shared_secret, pin_hash_encoding)
+        pin_hash = protocol.decrypt(shared_secret, pin_hash_encoding)
         if not hmac.compare_digest(pin_hash, self._client.pin_hash() or b""):
             logger.warning("GET_PIN_TOKEN: PIN mismatch")
             return _status(CTAP2_ERR_PIN_INVALID)
         self._client.set_pin_retries(8)
         return _success(
-            {2: crypto.encrypt_aes_cbc(shared_secret, self._client.pin_token())}
+            {2: protocol.encrypt(shared_secret, self._client.pin_token())}
         )

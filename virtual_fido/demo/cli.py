@@ -213,11 +213,14 @@ def cmd_generate_keyfile(args: argparse.Namespace) -> None:
 
 
 def cmd_pin_set(args: argparse.Namespace) -> None:
-    pin = str(args.pin)
-    if args.pin < 0 or len(pin) < 4:
-        print("Invalid PIN: PIN must be at least 4 digits", file=sys.stderr)
+    # PINs are strings, not integers: "0000" and "0123" must be preserved
+    # exactly (CTAP2 allows 4–63 UTF-8 bytes, not just digits). The minimum
+    # is measured in UTF-8 bytes, matching the authenticator's check.
+    pin_bytes = args.pin.encode("utf-8")
+    if len(pin_bytes) < 4:
+        print("Invalid PIN: PIN must be at least 4 characters", file=sys.stderr)
         sys.exit(1)
-    create_client(args).set_pin(pin.encode())
+    create_client(args).set_pin(pin_bytes)
     print("PIN set")
 
 
@@ -294,7 +297,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         func=cmd_pin_disable
     )
     pin_set_parser = pin_subparsers.add_parser("set", help="Set the PIN")
-    pin_set_parser.add_argument("--pin", type=int, required=True, help="New PIN")
+    pin_set_parser.add_argument(
+        "--pin", required=True, help="New PIN (4-63 characters, e.g. 0000)"
+    )
     pin_set_parser.set_defaults(func=cmd_pin_set)
 
     args = parser.parse_args(argv)

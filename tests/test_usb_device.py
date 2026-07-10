@@ -227,3 +227,46 @@ def test_output_endpoint_cancel():
     assert not device.remove_waiting_request(11)
     delegate.response_handler(b"late")
     assert responses == []  # cancelled request must not fire
+
+
+def test_output_endpoint_stays_pending_no_timeout_nak():
+    """Regression: an interrupt-IN poll must stay pending until data arrives,
+    never self-completing with an empty/zero packet. A timeout NAK here
+    injected a bogus all-zero HID report and broke multi-packet reassembly
+    during PIN entry (getKeyAgreement)."""
+    import time
+
+    delegate = DummyDelegate()
+    device = usb.USBDevice(delegate)
+    responses = []
+    device.handle_message(1, responses.append, usb.ENDPOINT_OUTPUT, b"\x00" * 8, b"")
+    time.sleep(1.2)  # well past the old 1-second timeout
+    assert responses == []  # still pending, no bogus completion
+    delegate.response_handler(b"real-report")
+    assert responses == [b"real-report"]
+
+
+def test_multi_packet_response_single_poll_at_a_time():
+    """Simulate the idle host: exactly one interrupt-IN poll outstanding,
+    re-polling after each completion. A 2-packet response must arrive intact
+    and in order (the getKeyAgreement failure scenario)."""
+    delegate = DummyDelegate()
+    device = usb.USBDevice(delegate)
+    received = []
+    counter = [100]
+
+    def submit_poll():
+        rid = counter[0]
+        counter[0] += 1
+
+        def on_complete(packet):
+            received.append(packet)
+            submit_poll()  # real host re-polls immediately after completion
+
+        device.handle_message(rid, on_complete, usb.ENDPOINT_OUTPUT, b"\x00" * 8, b"")
+
+    submit_poll()  # one poll outstanding, as during idle
+    # CTAPHID produces a 2-packet response
+    delegate.response_handler(b"packet-1")
+    delegate.response_handler(b"packet-2")
+    assert received == [b"packet-1", b"packet-2"]

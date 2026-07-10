@@ -85,7 +85,8 @@ class DefaultFIDOClient:
         self._cert_private_key = attestation_ca_private_key
         self._authentication_counter = 1
         self._pin_enabled = enable_pin
-        self._pin_token = crypto.random_bytes(16)
+        # 32 bytes: required by PIN/UV auth protocol 2, works for protocol 1 too
+        self._pin_token = crypto.random_bytes(32)
         self._pin_key_agreement = crypto.ECDHKey()
         self._pin_retries = 8
         self._pin_hash: Optional[bytes] = None

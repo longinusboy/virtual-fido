@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
 
 from . import usbip
-from ._util import ProtocolError, RequestBuffer, set_timeout, utf16_encode
+from ._util import ProtocolError, RequestBuffer, utf16_encode
 
 logger = logging.getLogger("virtual_fido.usb")
 
@@ -252,16 +252,18 @@ class USBDevice:
             logger.debug("CONTROL: %s", setup)
             on_finish(self._handle_control_message(setup))
         elif endpoint == ENDPOINT_OUTPUT:
-            # Host is polling for a HID report; answer when the CTAPHID
-            # layer produces one, or cancel after a timeout so the URB
-            # doesn't stay pending forever.
+            # Host is polling the interrupt-IN endpoint for a HID report.
+            # Leave the poll pending until the CTAPHID layer produces data;
+            # the host cancels it with an UNLINK when it no longer wants it
+            # (remove_waiting_request). This mirrors a real interrupt endpoint
+            # NAKing until data is ready.
+            #
+            # Do NOT time the poll out and complete it with an empty/zero
+            # response: that both injects a bogus all-zero HID packet and
+            # forces a slow re-poll cadence that races with multi-packet
+            # responses, corrupting reassembly on the host (e.g. the 2-packet
+            # getKeyAgreement reply during PIN entry).
             self._request_buffer.request(request_id, on_finish)
-
-            def cancel() -> None:
-                if self._request_buffer.cancel_request(request_id):
-                    on_finish(None)
-
-            set_timeout(1.0, cancel)
         elif endpoint == ENDPOINT_INPUT:
             logger.debug("INPUT DATA: %r", transfer_buffer)
 

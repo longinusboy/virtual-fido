@@ -204,3 +204,19 @@ def test_cli_interactive_prompt(tmp_path, monkeypatch, capsys):
     cli.main(["--vault", str(vault), "pin", "set", "--pin", "9876"])
     state = identities.decrypt_fido_state(vault.read_bytes(), "prompted-secret")
     assert state.pin_hash == crypto.hash_sha256(b"9876")[:16]
+
+
+@pytest.mark.parametrize("pin", ["0000", "0123", "00000000"])
+def test_cli_pin_preserves_leading_zeros(tmp_path, pin):
+    """Regression: '--pin 0000' must not be parsed as the integer 0."""
+    vault = tmp_path / "vault.json"
+    cli.main(["--vault", str(vault), "--passphrase", "pw", "pin", "set", "--pin", pin])
+    state = identities.decrypt_fido_state(vault.read_bytes(), "pw")
+    assert state.pin_hash == crypto.hash_sha256(pin.encode())[:16]
+
+
+def test_cli_pin_too_short_rejected(tmp_path, capsys):
+    vault = tmp_path / "vault.json"
+    with pytest.raises(SystemExit):
+        cli.main(["--vault", str(vault), "--passphrase", "pw", "pin", "set", "--pin", "12"])
+    assert "at least 4" in capsys.readouterr().err
