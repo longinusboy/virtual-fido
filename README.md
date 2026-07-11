@@ -147,6 +147,16 @@ what gets typed depends on the client's keyboard layout — Yubico's ModHex
 alphabet is chosen to be layout-stable, but arbitrary static passwords with
 symbols are not. Aim `otp type` at a plain text field, not your terminal.
 
+## CCID (smartcard)
+
+The device exposes a CCID smartcard interface (like a real YubiKey's
+OATH/PIV/OpenPGP applets). The transport is in place — the reader enumerates,
+the virtual card answers power-on with a YubiKey ATR, and APDUs are routed to
+applets by AID. **Applets are still being added** (OATH next, then PIV), so
+today `SELECT` of any applet returns "file not found". Once applets land, the
+client provisions and uses them over the wire with `ykman oath` / `ykman piv`;
+`pcsc_scan` on the client should already show the reader and card ATR.
+
 ## Device identity
 
 By default the device announces itself exactly like a YubiKey 5, matching a

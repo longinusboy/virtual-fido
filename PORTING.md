@@ -14,6 +14,7 @@ the Windows/Linux USB/IP clients).
 | —             | `virtual_fido/fido_hid.py`  | FIDO HID interface (extracted from the old single-interface usb.py). |
 | —             | `virtual_fido/otp.py`       | OTP HID keyboard interface + Yubico OTP / ModHex / CRC16 (no Go equivalent). |
 | —             | `virtual_fido/control.py`   | Local Unix-socket control channel used to trigger OTP typing (`otp type`). |
+| —             | `virtual_fido/ccid.py`      | CCID smartcard interface: bulk endpoints, CCID message layer, ISO 7816-4 APDU parse + SELECT-by-AID applet routing + GET RESPONSE chaining (no Go equivalent). |
 | `ctap_hid/`   | `virtual_fido/ctap_hid.py`  | Packet reassembly → transactions → channels; keepalives. |
 | `ctap/`       | `virtual_fido/ctap.py`      | CTAP2 (CBOR) command handling. **Extends Go**: PIN/UV auth protocols 1 *and* 2 + permissions-based token (subcommand 0x09), advertising FIDO_2_1, so modern browsers' PIN flow works. |
 | —             | `virtual_fido/pin_protocol.py` | PIN/UV auth protocol 1 & 2 primitives (no Go equivalent — Go only did protocol 1 inline). |

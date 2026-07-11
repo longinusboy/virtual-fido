@@ -96,6 +96,7 @@ def test_cmd_start_wiring_builds_without_error(tmp_path, monkeypatch):
 
     def fake_start(client, **kwargs):
         started["otp"] = kwargs.get("otp")
+        started["ccid"] = kwargs.get("ccid")
         # Exercise the control handler wiring: trigger a type via the reload path
         kwargs["otp"].type_otp(1)
 
@@ -107,6 +108,7 @@ def test_cmd_start_wiring_builds_without_error(tmp_path, monkeypatch):
     )
     assert started["otp"] is not None
     assert sorted(started["otp"].slots) == [1]
+    assert started["ccid"] is not None  # CCID interface wired in too
 
 
 def test_otp_type_no_server(tmp_path, capsys):

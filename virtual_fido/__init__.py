@@ -26,15 +26,17 @@ def start(
     port: int = 3240,
     device_config=None,
     otp=None,
+    ccid=None,
 ) -> None:
     """Wire the full server stack and serve USB/IP (blocking).
 
     `client` must implement both the CTAP2 and U2F client interfaces —
     see fido_client.DefaultFIDOClient. `device_config` is an optional
     usb.USBDeviceConfig controlling the USB identity the host sees
-    (defaults to a YubiKey 5). `otp` is an optional otp.OTPKeyboardInterface;
-    when present the device exposes an OTP keyboard interface (interface 0,
-    before FIDO, matching a real YubiKey). Equivalent of Go's virtual_fido.Start.
+    (defaults to a YubiKey 5). `otp` / `ccid` are optional extra interfaces
+    (otp.OTPKeyboardInterface, ccid.CCIDInterface); when present the device
+    exposes them as interface 0 (OTP) and interface 2 (CCID), around FIDO, to
+    match a real YubiKey's OTP+FIDO+CCID layout. Equivalent of Go's Start.
     """
     from . import ctap, ctap_hid, u2f, usb, usbip
     from .fido_hid import FidoHIDInterface
@@ -46,6 +48,8 @@ def start(
     if otp is not None:
         interfaces.append(otp)
     interfaces.append(FidoHIDInterface(ctap_hid_server))
+    if ccid is not None:
+        interfaces.append(ccid)
     device = usb.USBDevice(interfaces, config=device_config)
     server = usbip.USBIPServer([device], bind_address=bind_address, port=port)
     server.start()

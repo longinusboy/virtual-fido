@@ -148,6 +148,7 @@ def control_socket_path(args: argparse.Namespace) -> str:
 
 
 def cmd_start(args: argparse.Namespace) -> None:
+    from virtual_fido.ccid import CCIDInterface
     from virtual_fido.control import ControlServer
     from virtual_fido.otp import OTPKeyboardInterface, OTPSlot
     from virtual_fido.usb import USBDeviceConfig
@@ -184,6 +185,11 @@ def cmd_start(args: argparse.Namespace) -> None:
     )
     control.start()
 
+    # CCID smartcard interface. Applets (OATH/PIV) are added in later phases;
+    # for now the reader enumerates and answers power-on/status so pcscd sees
+    # a card, and SELECT of any applet AID returns "file not found".
+    ccid_interface = CCIDInterface(applets=[])
+
     print(f"Serving USB/IP on {args.bind}:{args.port}")
     print(
         f"Device identity: {device_config.manufacturer} {device_config.product}"
@@ -202,6 +208,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         port=args.port,
         device_config=device_config,
         otp=otp_interface,
+        ccid=ccid_interface,
     )
 
 
