@@ -102,14 +102,13 @@ class USBIPDeviceInterface:
 
 @dataclass
 class USBIPDeviceSummary:
-    # Only one interface is supported, mirroring the Go original.
     header: USBIPDeviceSummaryHeader
-    device_interface: USBIPDeviceInterface = field(
-        default_factory=lambda: USBIPDeviceInterface(3, 0)
-    )
+    interfaces: list[USBIPDeviceInterface] = field(default_factory=list)
 
     def pack(self) -> bytes:
-        return self.header.pack() + self.device_interface.pack()
+        # Interface list is only sent in OP_REP_DEVLIST (`usbip list`); attach
+        # sends the header alone and enumerates via the config descriptor.
+        return self.header.pack() + b"".join(i.pack() for i in self.interfaces)
 
 
 class USBIPDevice(Protocol):
@@ -120,6 +119,7 @@ class USBIPDevice(Protocol):
         request_id: int,
         on_finish: Callable[[Optional[bytes]], None],
         endpoint: int,
+        direction: int,
         setup_bytes: bytes,
         transfer_buffer: bytes,
     ) -> None: ...
@@ -296,25 +296,29 @@ class _Connection:
         else:
             transfer_buffer = bytes(buffer_length)
 
-        # The response may not be immediate (interrupt-IN transfers wait for
-        # data), so completion happens through this callback, possibly from
+        # The response may not be immediate (interrupt/bulk IN transfers wait
+        # for data), so completion happens through this callback, possibly from
         # another thread.
         def on_finish(response: Optional[bytes]) -> None:
-            buffer = bytearray(transfer_buffer)
-            if response:
-                n = min(len(response), len(buffer))
-                buffer[:n] = response[:n]
-            # Bug-compat with the Go original: actual_length is always the
-            # full buffer length and IN data is zero-padded to it; the
-            # vhci-hcd driver accepts this.
-            reply = _pack_reply_header(RET_SUBMIT, seqnum) + _RETURN_SUBMIT_BODY.pack(
-                0, len(buffer), 0, 0, 0, 0
-            )
             if direction == DIR_IN:
-                reply += bytes(buffer)
+                # Return exactly the produced data (clamped to what the host
+                # asked for); actual_length is its true length. Do NOT pad to
+                # the full requested buffer — that breaks variable-length bulk
+                # (CCID) responses. Fixed 64-byte FIDO reports are unaffected.
+                data = (response or b"")[:buffer_length]
+                reply = _pack_reply_header(
+                    RET_SUBMIT, seqnum
+                ) + _RETURN_SUBMIT_BODY.pack(0, len(data), 0, 0, 0, 0) + bytes(data)
+            else:
+                # OUT: acknowledge all bytes accepted, no data returned.
+                reply = _pack_reply_header(
+                    RET_SUBMIT, seqnum
+                ) + _RETURN_SUBMIT_BODY.pack(0, buffer_length, 0, 0, 0, 0)
             self._write(reply)
 
-        device.handle_message(seqnum, on_finish, endpoint, setup_bytes, transfer_buffer)
+        device.handle_message(
+            seqnum, on_finish, endpoint, direction, setup_bytes, transfer_buffer
+        )
 
     def _handle_command_unlink(self, device: USBIPDevice, seqnum: int) -> None:
         unlink_seqnum, _padding = _UNLINK_BODY.unpack(self._read(_UNLINK_BODY.size))

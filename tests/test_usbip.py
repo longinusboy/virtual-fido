@@ -6,6 +6,7 @@ import threading
 import time
 
 from virtual_fido import usb, usbip
+from virtual_fido.fido_hid import FidoHIDInterface
 
 
 class DummyDelegate:
@@ -20,11 +21,15 @@ class DummyDelegate:
         self.response_handler = handler
 
 
+def make_device():
+    return usb.USBDevice([FidoHIDInterface(DummyDelegate())])
+
+
 def test_device_summary_pack_sizes():
-    device = usb.USBDevice(DummyDelegate())
+    device = make_device()
     summary = device.device_summary()
     assert len(summary.header.pack()) == 312
-    assert len(summary.pack()) == 315
+    assert len(summary.pack()) == 312 + 3 * len(summary.interfaces)
 
 
 def test_control_header_roundtrip():
@@ -37,7 +42,7 @@ def test_control_header_roundtrip():
 
 
 def _start_server(port):
-    device = usb.USBDevice(DummyDelegate())
+    device = make_device()
     server = usbip.USBIPServer([device], bind_address="127.0.0.1", port=port)
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()

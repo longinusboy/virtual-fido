@@ -133,7 +133,23 @@ def create_client(args: argparse.Namespace) -> DefaultFIDOClient:
     )
 
 
+def control_socket_path(args: argparse.Namespace) -> str:
+    if getattr(args, "control_socket", None):
+        return args.control_socket
+    # Default lives in the runtime dir (short path — AF_UNIX caps at ~108
+    # bytes, so a deep vault path can't be used directly), keyed by a hash of
+    # the vault so each vault gets its own socket and `otp type --vault X`
+    # finds the matching server.
+    import tempfile
+
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    digest = hashlib.sha256(str(Path(args.vault).resolve()).encode()).hexdigest()[:8]
+    return os.path.join(runtime, f"virtual-fido-{digest}.sock")
+
+
 def cmd_start(args: argparse.Namespace) -> None:
+    from virtual_fido.control import ControlServer
+    from virtual_fido.otp import OTPKeyboardInterface, OTPSlot
     from virtual_fido.usb import USBDeviceConfig
 
     client = create_client(args)
@@ -145,16 +161,47 @@ def cmd_start(args: argparse.Namespace) -> None:
         product=args.product,
         serial_number=args.serial_number,
     )
+
+    # OTP keyboard interface, loaded with any provisioned slots.
+    def load_slots() -> dict:
+        return {
+            int(n): OTPSlot.from_json_obj(obj) for n, obj in client.otp_slots.items()
+        }
+
+    otp_interface = OTPKeyboardInterface(load_slots())
+
+    def handle_otp_type(command_args: list) -> str:
+        slot = int(command_args[0]) if command_args else 1
+        # Re-read the vault so slots provisioned after the server started are
+        # picked up without a restart.
+        client.reload_otp_slots()
+        otp_interface.slots = load_slots()
+        otp_interface.type_otp(slot)
+        return f"typed slot {slot}"
+
+    control = ControlServer(
+        control_socket_path(args), {"otp-type": handle_otp_type}
+    )
+    control.start()
+
     print(f"Serving USB/IP on {args.bind}:{args.port}")
     print(
         f"Device identity: {device_config.manufacturer} {device_config.product}"
         f" ({device_config.id_vendor:04x}:{device_config.id_product:04x})"
     )
+    print(
+        f"Control socket: {control_socket_path(args)}"
+        f"  (OTP slots: {sorted(otp_interface.slots)})"
+    )
     print("Attach from the client machine (Linux):")
     print("  sudo modprobe vhci-hcd")
     print(f"  sudo usbip attach -r {args.bind} -b 2-2")
     virtual_fido.start(
-        client, bind_address=args.bind, port=args.port, device_config=device_config
+        client,
+        bind_address=args.bind,
+        port=args.port,
+        device_config=device_config,
+        otp=otp_interface,
     )
 
 
@@ -212,6 +259,59 @@ def cmd_generate_keyfile(args: argparse.Namespace) -> None:
     print("cannot be decrypted. Existing vaults adopt it on their next save.")
 
 
+def cmd_otp_set(args: argparse.Namespace) -> None:
+    from virtual_fido.otp import OTPSlot, modhex_decode
+
+    if args.type == "yubico":
+        try:
+            aes_key = bytes.fromhex(args.key or "")
+            private_id = bytes.fromhex(args.private_id or "")
+        except ValueError:
+            print("Invalid hex in --key/--private-id", file=sys.stderr)
+            sys.exit(1)
+        if len(aes_key) != 16:
+            print("--key must be 16 bytes (32 hex chars)", file=sys.stderr)
+            sys.exit(1)
+        if len(private_id) != 6:
+            print("--private-id must be 6 bytes (12 hex chars)", file=sys.stderr)
+            sys.exit(1)
+        public_id = modhex_decode(args.public_id) if args.public_id else b""
+        slot = OTPSlot(
+            kind="yubico", aes_key=aes_key, public_id=public_id, private_id=private_id
+        )
+    else:  # static
+        if not args.password:
+            print("--password is required for a static slot", file=sys.stderr)
+            sys.exit(1)
+        slot = OTPSlot(kind="static", password=args.password)
+
+    client = create_client(args)
+    client.set_otp_slot(args.slot, slot.to_json_obj())
+    print(f"OTP slot {args.slot} set ({args.type})")
+
+
+def cmd_otp_type(args: argparse.Namespace) -> None:
+    import time
+
+    from virtual_fido.control import send_command
+
+    path = control_socket_path(args)
+    # Give the user time to focus the target field before the device starts
+    # "typing" — otherwise the keystrokes land wherever focus happens to be.
+    delay = max(0.0, args.delay)
+    if delay:
+        print(f"Focus the target field... typing slot {args.slot} in {delay:g}s")
+        time.sleep(delay)
+    try:
+        response = send_command(path, f"otp-type {args.slot}")
+    except (FileNotFoundError, ConnectionRefusedError):
+        print(f"No running server at control socket {path}", file=sys.stderr)
+        sys.exit(1)
+    print(response)
+    if response.startswith("error"):
+        sys.exit(1)
+
+
 def cmd_pin_set(args: argparse.Namespace) -> None:
     # PINs are strings, not integers: "0000" and "0123" must be preserved
     # exactly (CTAP2 allows 4–63 UTF-8 bytes, not just digits). The minimum
@@ -246,6 +346,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         default=None,
         help="Second vault secret: path to a keyfile (see generate-keyfile)."
         " Keep it on separate media from the vault.",
+    )
+    parser.add_argument(
+        "--control-socket",
+        default=None,
+        help="Unix socket for controlling a running server (default: <vault>.sock)",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -287,6 +392,26 @@ def main(argv: Optional[list[str]] = None) -> None:
         help="Create a new keyfile at the path given by --keyfile",
     )
     keyfile_parser.set_defaults(func=cmd_generate_keyfile)
+
+    otp_parser = subparsers.add_parser("otp", help="Manage / trigger the OTP keyboard")
+    otp_sub = otp_parser.add_subparsers(dest="otp_command", required=True)
+    otp_set = otp_sub.add_parser("set", help="Provision an OTP slot")
+    otp_set.add_argument("--slot", type=int, choices=(1, 2), required=True)
+    otp_set.add_argument("--type", choices=("yubico", "static"), default="yubico")
+    otp_set.add_argument("--key", help="Yubico OTP: AES-128 key, 32 hex chars")
+    otp_set.add_argument("--private-id", help="Yubico OTP: private UID, 12 hex chars")
+    otp_set.add_argument("--public-id", help="Yubico OTP: public id in ModHex (optional)")
+    otp_set.add_argument("--password", help="Static slot: text to type")
+    otp_set.set_defaults(func=cmd_otp_set)
+    otp_type = otp_sub.add_parser("type", help="Make the running device type an OTP")
+    otp_type.add_argument("--slot", type=int, default=1)
+    otp_type.add_argument(
+        "--delay",
+        type=float,
+        default=3.0,
+        help="Seconds to wait before typing, to focus the target field (default 3)",
+    )
+    otp_type.set_defaults(func=cmd_otp_type)
 
     pin_parser = subparsers.add_parser("pin", help="Modify PIN behavior")
     pin_subparsers = pin_parser.add_subparsers(dest="pin_command", required=True)

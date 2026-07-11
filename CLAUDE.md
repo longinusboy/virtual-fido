@@ -41,9 +41,12 @@ Same server stack as the Go version — each layer wraps the next. `virtual_fido
 
 ```
 USBIPServer (usbip.py)       TCP, USB/IP protocol; bind address configurable
-  └─ USBDevice (usb.py)      USB descriptors + HID interface + endpoint buffering
-     (identity via USBDeviceConfig — defaults announce a YubiKey 5:
-      1050:0407, bcdDevice 5.74, "Yubico" / "YubiKey OTP+FIDO+CCID", no serial)
+  └─ USBDevice (usb.py)      composite device: aggregates USBInterfaces,
+     │                       assigns interface/endpoint numbers, routes URBs
+     │                       (identity via USBDeviceConfig — YubiKey 5 defaults:
+     │                        1050:0407, bcdDevice 5.74, "Yubico"/"YubiKey OTP+FIDO+CCID")
+     ├─ OTPKeyboardInterface (otp.py)   HID keyboard; Yubico OTP / static pw
+     └─ FidoHIDInterface (fido_hid.py)  CTAPHID transport (wraps CTAPHIDServer)
       └─ CTAPHIDServer (ctap_hid.py)   packets → transactions → channels; keepalives
           ├─ CTAPServer (ctap.py)      FIDO2/CTAP2 (CBOR via cbor2)
           └─ U2FServer (u2f.py)        U2F/CTAP1

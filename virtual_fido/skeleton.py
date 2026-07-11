@@ -46,7 +46,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    device = usb.USBDevice(NullCTAPHIDDelegate())
+    from .fido_hid import FidoHIDInterface
+
+    device = usb.USBDevice([FidoHIDInterface(NullCTAPHIDDelegate())])
     server = usbip.USBIPServer([device], bind_address=args.bind, port=args.port)
     server.start()
 

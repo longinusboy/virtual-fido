@@ -180,6 +180,9 @@ class FIDODeviceConfig:
     pin_enabled: bool = False
     pin_hash: bytes = b""
     sources: list[dict] = field(default_factory=list)
+    # Additive, optional sections for the non-FIDO YubiKey applications.
+    # Keyed by slot/credential; opaque JSON owned by the respective subsystem.
+    otp_slots: dict = field(default_factory=dict)
 
 
 class VaultDecryptionError(Exception):
@@ -322,6 +325,8 @@ def encrypt_fido_state(
         obj["pin_enabled"] = True
     if state.pin_hash:
         obj["pin_hash"] = _b64(state.pin_hash)
+    if state.otp_slots:
+        obj["otp_slots"] = state.otp_slots
     return encrypt_with_passphrase(passphrase, json.dumps(obj).encode(), keyfile)
 
 
@@ -337,6 +342,7 @@ def decrypt_fido_state(
         pin_enabled=obj.get("pin_enabled", False),
         pin_hash=_unb64(obj.get("pin_hash")),
         sources=obj.get("sources", []) or [],
+        otp_slots=obj.get("otp_slots", {}) or {},
     )
 
 

@@ -128,6 +128,20 @@ def aes_cbc_decrypt(key: bytes, iv: bytes, data: bytes) -> bytes:
     return decryptor.update(data) + decryptor.finalize()
 
 
+def aes_ecb_encrypt(key: bytes, data: bytes) -> bytes:
+    """AES-ECB (single block, no IV) — used for Yubico OTP token encryption.
+    Only safe here because each OTP token is unique (counters + random)."""
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
+    encryptor = cipher.encryptor()
+    return encryptor.update(data) + encryptor.finalize()
+
+
+def aes_ecb_decrypt(key: bytes, data: bytes) -> bytes:
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
+    decryptor = cipher.decryptor()
+    return decryptor.update(data) + decryptor.finalize()
+
+
 def encrypt_aes_cbc(key: bytes, data: bytes) -> bytes:
     """AES-CBC with a zero IV — PIN/UV auth protocol 1, where the plaintext
     is itself unpredictable (crypto.EncryptAESCBC)."""

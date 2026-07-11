@@ -91,6 +91,8 @@ class DefaultFIDOClient:
         self._pin_retries = 8
         self._pin_hash: Optional[bytes] = None
         self.vault = IdentityVault()
+        # OTP slots: {slot_number: opaque JSON dict owned by the otp module}.
+        self.otp_slots: dict[int, dict] = {}
         self._request_approver = request_approver
         self._data_saver = data_saver
         self._load_data()
@@ -236,6 +238,7 @@ class DefaultFIDOClient:
             pin_enabled=self._pin_enabled,
             pin_hash=self._pin_hash or b"",
             sources=self.vault.export(),
+            otp_slots={str(n): obj for n, obj in self.otp_slots.items()},
         )
         return identities.encrypt_fido_state(state, passphrase, keyfile)
 
@@ -262,6 +265,23 @@ class DefaultFIDOClient:
         self._pin_hash = state.pin_hash or None
         self.vault = IdentityVault()
         self.vault.import_sources(state.sources)
+        self.otp_slots = {int(n): obj for n, obj in (state.otp_slots or {}).items()}
+
+    def set_otp_slot(self, slot_number: int, slot_obj: dict) -> None:
+        self.otp_slots[slot_number] = slot_obj
+        self._save_data()
+
+    def reload_otp_slots(self) -> dict[int, dict]:
+        """Re-read just the OTP slots from the vault, without disturbing live
+        FIDO/PIN state. Lets a running server pick up slots provisioned after
+        it started."""
+        data = self._data_saver.retrieve_data()
+        if data:
+            state = identities.decrypt_fido_state(
+                data, self._data_saver.passphrase(), self._keyfile()
+            )
+            self.otp_slots = {int(n): obj for n, obj in (state.otp_slots or {}).items()}
+        return self.otp_slots
 
     def _save_data(self) -> None:
         self._data_saver.save_data(

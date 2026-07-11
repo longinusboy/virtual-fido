@@ -50,8 +50,15 @@ def build_stack():
     ctap_server = ctap.CTAPServer(client)
     u2f_server = u2f.U2FServer(client)
     hid_server = ctap_hid.CTAPHIDServer(ctap_server, u2f_server)
-    device = usb.USBDevice(hid_server)
+    from virtual_fido.fido_hid import FidoHIDInterface
+
+    device = usb.USBDevice([FidoHIDInterface(hid_server)])
     return client, device
+
+
+# FIDO is the only interface here: EP1 IN (report poll), EP2 OUT (report in).
+_FIDO_IN_EP = 1
+_FIDO_OUT_EP = 2
 
 
 class HostDriver:
@@ -79,7 +86,7 @@ class HostDriver:
     def _poll_once(self):
         self._request_id += 1
         self._device.handle_message(
-            self._request_id, self._on_packet, usb.ENDPOINT_OUTPUT, b"\x00" * 8, b""
+            self._request_id, self._on_packet, _FIDO_IN_EP, usb.DIR_IN, b"\x00" * 8, b""
         )
 
     def send_message(self, channel_id: int, command: int, payload: bytes) -> bytes:
@@ -89,7 +96,7 @@ class HostDriver:
             self._packets.clear()
         for packet in ctap_hid.create_response_packets(channel_id, command, payload):
             self._device.handle_message(
-                0, lambda r: None, usb.ENDPOINT_INPUT, b"\x00" * 8, packet
+                0, lambda r: None, _FIDO_OUT_EP, usb.DIR_OUT, b"\x00" * 8, packet
             )
         # Keep several interrupt-IN polls outstanding so the CTAPHID server
         # can deliver every response packet; CTAP handling runs on a worker

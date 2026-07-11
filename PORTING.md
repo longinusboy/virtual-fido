@@ -10,7 +10,10 @@ the Windows/Linux USB/IP clients).
 | Go package    | Python module               | Notes |
 |---------------|-----------------------------|-------|
 | `usbip/`      | `virtual_fido/usbip.py`     | USB/IP wire protocol + TCP server. Bind address is configurable (`--bind`); default `127.0.0.1`. Remote use is expected to go through a WireGuard/SSH tunnel — the server itself does no encryption. |
-| `usb/`        | `virtual_fido/usb.py`       | USB descriptors, control transfers, HID report descriptor, interrupt-endpoint buffering. **Diverges from Go**: interrupt-IN polls are held pending (no 1s timeout NAK) — the Go timeout injected zero packets and broke multi-packet reassembly during PIN entry. |
+| `usb/`        | `virtual_fido/usb.py`       | Multi-interface USB device: descriptors, control transfers, endpoint routing. Aggregates `USBInterface`s (FIDO/OTP/CCID). **Diverges from Go**: interrupt-IN polls are held pending (no 1s timeout NAK); IN transfers return exact-length data (not zero-padded to the requested buffer). |
+| —             | `virtual_fido/fido_hid.py`  | FIDO HID interface (extracted from the old single-interface usb.py). |
+| —             | `virtual_fido/otp.py`       | OTP HID keyboard interface + Yubico OTP / ModHex / CRC16 (no Go equivalent). |
+| —             | `virtual_fido/control.py`   | Local Unix-socket control channel used to trigger OTP typing (`otp type`). |
 | `ctap_hid/`   | `virtual_fido/ctap_hid.py`  | Packet reassembly → transactions → channels; keepalives. |
 | `ctap/`       | `virtual_fido/ctap.py`      | CTAP2 (CBOR) command handling. **Extends Go**: PIN/UV auth protocols 1 *and* 2 + permissions-based token (subcommand 0x09), advertising FIDO_2_1, so modern browsers' PIN flow works. |
 | —             | `virtual_fido/pin_protocol.py` | PIN/UV auth protocol 1 & 2 primitives (no Go equivalent — Go only did protocol 1 inline). |

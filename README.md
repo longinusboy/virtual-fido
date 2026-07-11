@@ -118,6 +118,35 @@ memory, and Python cannot reliably zero them — an attacker who can read the
 server process's memory wins regardless of file encryption. Keep machine B
 minimal and don't browse on it; that's the point of the two-machine split.
 
+## OTP (one-time passwords)
+
+The device exposes an OTP HID **keyboard** interface, like a real YubiKey.
+Since there is no physical button, output is triggered explicitly: provision a
+slot, start the server, then trigger typing while the target field is focused
+on the client machine.
+
+```bash
+# Provision slot 1 as a Yubico OTP (AES key + private/public id)
+uv run virtual-fido-demo --vault vault.json otp set --slot 1 --type yubico \
+    --key 00112233445566778899aabbccddeeff \
+    --private-id 010203040506 --public-id ccccccbbbbbb
+
+# ...or a static password
+uv run virtual-fido-demo --vault vault.json otp set --slot 2 --type static --password "s3cret"
+
+# With the server running, "type" a slot. By default it waits 3s first so you
+# can focus the target field on the client; tune with --delay.
+uv run virtual-fido-demo --vault vault.json otp type --slot 1 --delay 3
+```
+
+`otp type` talks to the running server over a local Unix control socket
+(default under `$XDG_RUNTIME_DIR`, keyed by vault; override with
+`--control-socket`). Slots provisioned while the server is running are picked
+up automatically (no restart needed). Caveat: HID keyboards send *keycodes*, so
+what gets typed depends on the client's keyboard layout — Yubico's ModHex
+alphabet is chosen to be layout-stable, but arbitrary static passwords with
+symbols are not. Aim `otp type` at a plain text field, not your terminal.
+
 ## Device identity
 
 By default the device announces itself exactly like a YubiKey 5, matching a
