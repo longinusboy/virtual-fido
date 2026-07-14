@@ -277,11 +277,15 @@ class USBInterface:
 
     def handle_data(
         self,
+        endpoint: int,
         direction: int,
         request_id: int,
         transfer_buffer: bytes,
         on_finish: Callable[[Optional[bytes]], None],
     ) -> None:
+        """Handle a data-endpoint URB. `endpoint` is the assigned endpoint
+        number (see `endpoint_numbers`), needed to distinguish endpoints of
+        the same direction (e.g. CCID's bulk-IN vs interrupt-IN)."""
         raise NotImplementedError
 
     def cancel_request(self, request_id: int) -> bool:
@@ -391,13 +395,13 @@ class USBDevice:
         iface = self._ep_to_interface.get(endpoint)
         if iface is None:
             raise ProtocolError(f"Invalid USB endpoint: {endpoint}")
-        iface.handle_data(direction, request_id, transfer_buffer, on_finish)
+        iface.handle_data(endpoint, direction, request_id, transfer_buffer, on_finish)
 
     # ------------------------------------------------------------------
     # Control transfers
     # ------------------------------------------------------------------
 
-    def _handle_control_message(self, setup: USBSetupPacket) -> Optional[bytes]:
+    def _handle_control_message(self, setup: USBSetupPacket) -> Optional[object]:
         if setup.recipient == RECIPIENT_DEVICE:
             return self._handle_device_request(setup)
         if setup.recipient == RECIPIENT_INTERFACE:
@@ -407,9 +411,10 @@ class USBDevice:
             if setup.b_request == REQUEST_GET_STATUS:
                 return b"\x00\x00"
             return None
-        raise ProtocolError(f"Invalid control recipient: {setup.recipient}")
+        logger.debug("Stalling unsupported control recipient %d", setup.recipient)
+        return usbip.STALL
 
-    def _handle_device_request(self, setup: USBSetupPacket) -> Optional[bytes]:
+    def _handle_device_request(self, setup: USBSetupPacket) -> Optional[object]:
         if setup.b_request == REQUEST_GET_DESCRIPTOR:
             descriptor_type, index = descriptor_type_and_index(setup.w_value)
             return self._get_descriptor(descriptor_type, index)
@@ -417,31 +422,39 @@ class USBDevice:
             logger.debug("SET_CONFIGURATION: no-op")  # only one configuration
             return None
         if setup.b_request == REQUEST_GET_STATUS:
-            return b"\x01"
-        raise ProtocolError(f"Invalid device bRequest: {setup.b_request}")
+            # Self-powered, no remote wakeup (2-byte device status).
+            return b"\x01\x00"
+        # Unsupported standard request: stall so the host moves on immediately.
+        logger.debug("Stalling unsupported device bRequest: %d", setup.b_request)
+        return usbip.STALL
 
-    def _handle_interface_request(self, setup: USBSetupPacket) -> Optional[bytes]:
+    def _handle_interface_request(self, setup: USBSetupPacket) -> Optional[object]:
         number = setup.w_index & 0xFF
         if number >= len(self._interfaces):
-            raise ProtocolError(f"Invalid interface number: {number}")
+            logger.debug("Stalling request to invalid interface %d", number)
+            return usbip.STALL
         iface = self._interfaces[number]
         if setup.b_request == REQUEST_GET_DESCRIPTOR:
             descriptor_type, index = descriptor_type_and_index(setup.w_value)
             if descriptor_type == DESCRIPTOR_HID_REPORT:
                 report = iface.report_descriptor()
                 if report is None:
-                    raise ProtocolError(f"Interface {number} has no report descriptor")
+                    logger.debug("Interface %d has no report descriptor", number)
+                    return usbip.STALL
                 return report
-            raise ProtocolError(
-                f"Invalid interface descriptor: {descriptor_type} - {index}"
+            logger.debug(
+                "Stalling unsupported interface descriptor %d on interface %d",
+                descriptor_type,
+                number,
             )
+            return usbip.STALL
         return iface.handle_class_control(setup)
 
     # ------------------------------------------------------------------
     # Descriptors
     # ------------------------------------------------------------------
 
-    def _get_descriptor(self, descriptor_type: int, index: int) -> bytes:
+    def _get_descriptor(self, descriptor_type: int, index: int) -> object:
         logger.debug("GET_DESCRIPTOR type=%d index=%d", descriptor_type, index)
         if descriptor_type == DESCRIPTOR_DEVICE:
             return self._device_descriptor()
@@ -449,11 +462,17 @@ class USBDevice:
             return self._configuration_response()
         if descriptor_type == DESCRIPTOR_STRING:
             message = self._string_descriptor(index)
+            if message is None:
+                logger.debug("Stalling unknown string descriptor index %d", index)
+                return usbip.STALL
             header = _STRING_DESCRIPTOR_HEADER.pack(
                 _STRING_DESCRIPTOR_HEADER.size + len(message), DESCRIPTOR_STRING
             )
             return header + message
-        raise ProtocolError(f"Invalid descriptor type: {descriptor_type}")
+        # Optional descriptors we don't provide (device qualifier, debug, BOS,
+        # ...): stall so the host stops asking instead of timing out.
+        logger.debug("Stalling unsupported descriptor type %d", descriptor_type)
+        return usbip.STALL
 
     def _device_descriptor(self) -> bytes:
         return _DEVICE_DESCRIPTOR.pack(
@@ -504,10 +523,7 @@ class USBDevice:
         )
         return config + inner
 
-    def _string_descriptor(self, index: int) -> bytes:
+    def _string_descriptor(self, index: int) -> Optional[bytes]:
         if index == 0:
             return struct.pack("<H", LANG_ID_ENG_USA)
-        try:
-            return utf16_encode(self._strings[index])
-        except KeyError:
-            raise ProtocolError(f"Invalid string descriptor index: {index}") from None
+        return utf16_encode(self._strings[index]) if index in self._strings else None

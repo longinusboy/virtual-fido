@@ -54,7 +54,7 @@ def test_control_socket_triggers_typing(tmp_path):
             typed.append(data)
             poll()
 
-        interface.handle_data(usb.DIR_IN, len(typed) + 1, b"", on_report)
+        interface.handle_data(1, usb.DIR_IN, len(typed) + 1, b"", on_report)
 
     poll()
 

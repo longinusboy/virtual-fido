@@ -189,18 +189,26 @@ def test_get_response_partial_le():
 # ---------------------------------------------------------------------------
 
 
+def make_ccid_interface(applets):
+    interface = ccid.CCIDInterface(applets)
+    interface.endpoint_numbers = [4, 5, 6]  # bulk OUT, bulk IN, interrupt IN
+    return interface
+
+
 def test_interface_bulk_request_response():
     applet = DummyApplet()
-    interface = ccid.CCIDInterface([applet])
+    interface = make_ccid_interface([applet])
     responses = []
 
     # Host polls bulk IN first (held pending)
-    interface.handle_data(usb.DIR_IN, 1, b"", responses.append)
+    interface.handle_data(5, usb.DIR_IN, 1, b"", responses.append)
     assert responses == []
 
     # Host sends IccPowerOn on bulk OUT
     acks = []
-    interface.handle_data(usb.DIR_OUT, 2, build_ccid(ccid.PC_TO_RDR_ICC_POWER_ON), acks.append)
+    interface.handle_data(
+        4, usb.DIR_OUT, 2, build_ccid(ccid.PC_TO_RDR_ICC_POWER_ON), acks.append
+    )
     assert acks == [None]  # OUT is acked immediately
     # The pending IN poll now receives the DataBlock with the ATR
     assert len(responses) == 1
@@ -208,12 +216,27 @@ def test_interface_bulk_request_response():
     assert msg_type == ccid.RDR_TO_PC_DATA_BLOCK and data == ccid.ATR
 
 
+def test_interrupt_endpoint_notifies_once_then_holds():
+    """The interrupt-IN endpoint reports the slot state once, then holds later
+    polls pending (so the host blocks instead of spinning on GetSlotStatus)."""
+    interface = make_ccid_interface([])
+    first = []
+    interface.handle_data(6, usb.DIR_IN, 1, b"", first.append)
+    assert first == [bytes([ccid.RDR_TO_PC_NOTIFY_SLOT_CHANGE, 0x01])]
+
+    second = []
+    interface.handle_data(6, usb.DIR_IN, 2, b"", second.append)
+    assert second == []  # held pending, no notification
+
+
 def test_interface_descriptor_and_class():
     interface = ccid.CCIDInterface([])
     assert interface.interface_class == 0x0B
     assert interface.class_descriptors()[0] == 54  # bLength
     assert interface.class_descriptors()[1] == 0x21  # CCID functional descriptor
-    assert len(interface.endpoint_specs) == 2
+    assert len(interface.endpoint_specs) == 3
     assert not interface.endpoint_specs[0].is_in  # bulk OUT
     assert interface.endpoint_specs[1].is_in  # bulk IN
+    assert interface.endpoint_specs[2].is_in  # interrupt IN (notifications)
     assert interface.endpoint_specs[0].attributes == usb.ATTR_BULK
+    assert interface.endpoint_specs[2].attributes == usb.ATTR_INTERRUPT

@@ -41,6 +41,11 @@ CMD_UNLINK = 0x2
 RET_SUBMIT = 0x3
 RET_UNLINK = 0x4
 
+# Sentinel an interface/device may pass to on_finish to stall the URB
+# (unsupported control request); completed with -EPIPE so the host gives up
+# on it immediately instead of timing out.
+STALL = object()
+
 # All USB/IP wire structs are big-endian and packed (Go: util.ToBE/ReadBE).
 _CONTROL_HEADER = struct.Struct(">HHI")  # version, command, status
 _MESSAGE_HEADER = struct.Struct(">IIIII")  # command, seqnum, devid, direction, endpoint
@@ -300,6 +305,15 @@ class _Connection:
         # for data), so completion happens through this callback, possibly from
         # another thread.
         def on_finish(response: Optional[bytes]) -> None:
+            if response is STALL:
+                # Endpoint stall (-EPIPE): the host treats the request as
+                # unsupported and moves on immediately, instead of waiting out
+                # its timeout on an unanswered control request.
+                reply = _pack_reply_header(
+                    RET_SUBMIT, seqnum
+                ) + _RETURN_SUBMIT_BODY.pack((-errno.EPIPE) & 0xFFFFFFFF, 0, 0, 0, 0, 0)
+                self._write(reply)
+                return
             if direction == DIR_IN:
                 # Return exactly the produced data (clamped to what the host
                 # asked for); actual_length is its true length. Do NOT pad to

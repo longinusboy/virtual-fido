@@ -222,6 +222,7 @@ class OTPKeyboardInterface(USBInterface):
 
     def handle_data(
         self,
+        endpoint: int,
         direction: int,
         request_id: int,
         transfer_buffer: bytes,

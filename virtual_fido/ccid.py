@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ._util import RequestBuffer
-from .usb import ATTR_BULK, DIR_IN, EndpointSpec, USBInterface
+from .usb import ATTR_BULK, ATTR_INTERRUPT, DIR_IN, EndpointSpec, USBInterface
 
 logger = logging.getLogger("virtual_fido.ccid")
 
@@ -40,6 +40,11 @@ PC_TO_RDR_ABORT = 0x71
 RDR_TO_PC_DATA_BLOCK = 0x80
 RDR_TO_PC_SLOT_STATUS = 0x81
 RDR_TO_PC_PARAMETERS = 0x82
+
+# Interrupt-IN notification (RDR_to_PC_NotifySlotChange). Bitmap byte per the
+# CCID spec: bit0 = slot 0 present, bit1 = slot 0 changed since last notify.
+RDR_TO_PC_NOTIFY_SLOT_CHANGE = 0x50
+_SLOT_PRESENT_UNCHANGED = 0x01
 
 # ISO 7816 status words
 SW_SUCCESS = 0x9000
@@ -83,8 +88,10 @@ CCID_FUNCTIONAL_DESCRIPTOR = _CCID_FUNCTIONAL.pack(
     1,           # bMaxCCIDBusySlots
 )
 
-# Plausible YubiKey 5 ATR (T=1, historical bytes spell "YubiKey").
-ATR = bytes.fromhex("3bfd1300008131fe158073c021c0575975626943657940".replace(" ", ""))
+# YubiKey 5 ATR (T=1). Historical bytes spell "YubiKey"; the final byte (0x40)
+# is the T=1 checksum (TCK = XOR of all bytes after TS) and must stay valid —
+# libccid rejects the card and retries IccPowerOn forever on a bad TCK.
+ATR = bytes.fromhex("3bfd1300008131fe158073c021c057597562694b657940")
 
 # T=1 parameter block returned for Get/Set/ResetParameters.
 _T1_PARAMETERS = bytes([0x11, 0x10, 0x00, 0x4D, 0x00, 0xFE, 0x00])
@@ -242,22 +249,43 @@ class CCIDInterface(USBInterface):
     endpoint_specs = [
         EndpointSpec(is_in=False, attributes=ATTR_BULK, max_packet_size=64, interval=0),  # bulk OUT
         EndpointSpec(is_in=True, attributes=ATTR_BULK, max_packet_size=64, interval=0),   # bulk IN
+        # Interrupt IN for slot-change notifications. Without it libccid has no
+        # way to wait for card events and spins on GetSlotStatus polling; with
+        # it, the host does a blocking read here instead.
+        EndpointSpec(is_in=True, attributes=ATTR_INTERRUPT, max_packet_size=8, interval=255),
     ]
 
     def __init__(self, applets: Optional[list[Applet]] = None) -> None:
         self.card = SmartCard(applets or [])
         self._buffer = RequestBuffer()
+        self._notified = False
 
     def class_descriptors(self) -> bytes:
         return CCID_FUNCTIONAL_DESCRIPTOR
 
     def handle_data(
         self,
+        endpoint: int,
         direction: int,
         request_id: int,
         transfer_buffer: bytes,
         on_finish: Callable[[Optional[bytes]], None],
     ) -> None:
+        # endpoint_numbers = [bulk OUT, bulk IN, interrupt IN]
+        interrupt_ep = self.endpoint_numbers[2] if len(self.endpoint_numbers) > 2 else None
+
+        if endpoint == interrupt_ep:
+            # Slot-change notifications. The card is present and never changes,
+            # so report the current state once, then hold every later poll
+            # pending forever — the host blocks here instead of polling status.
+            if not self._notified:
+                self._notified = True
+                on_finish(
+                    bytes([RDR_TO_PC_NOTIFY_SLOT_CHANGE, _SLOT_PRESENT_UNCHANGED])
+                )
+            # else: leave pending (never call on_finish); host UNLINKs on detach.
+            return
+
         if direction == DIR_IN:
             # Host polls bulk IN for a CCID response; hold until we have one.
             self._buffer.request(request_id, on_finish)

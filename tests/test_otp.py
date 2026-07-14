@@ -104,7 +104,7 @@ class _Poller:
             self.reports.append(data)
             self._poll()
 
-        self.interface.handle_data(usb.DIR_IN, self._rid, b"", on_report)
+        self.interface.handle_data(1, usb.DIR_IN, self._rid, b"", on_report)
 
 
 def test_interface_types_static_password():

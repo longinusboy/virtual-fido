@@ -290,3 +290,34 @@ def test_invalid_endpoint_raises():
     device, _ = make_device()
     with pytest.raises(ProtocolError):
         device.handle_message(1, lambda r: None, 99, usb.DIR_IN, b"\x00" * 8, b"")
+
+
+def test_unsupported_descriptor_stalls():
+    """Optional descriptors we don't provide (e.g. debug/BOS, type 10) must
+    stall so the host gives up immediately instead of hanging (regression:
+    a real host's debug-descriptor probe stalled enumeration for 5s each)."""
+    from virtual_fido import usbip
+
+    device, _ = make_device()
+    setup = usb.USBSetupPacket.make(
+        b_request=usb.REQUEST_GET_DESCRIPTOR, w_value=0x0A00, w_length=4  # type 10
+    )
+    assert _control_response(device, setup) is usbip.STALL
+
+
+def test_unknown_string_index_stalls():
+    from virtual_fido import usbip
+
+    device, _ = make_device()
+    setup = usb.USBSetupPacket.make(
+        b_request=usb.REQUEST_GET_DESCRIPTOR,
+        w_value=(usb.DESCRIPTOR_STRING << 8) | 99,
+        w_length=255,
+    )
+    assert _control_response(device, setup) is usbip.STALL
+
+
+def test_get_status_returns_two_bytes():
+    device, _ = make_device()
+    setup = usb.USBSetupPacket.make(b_request=usb.REQUEST_GET_STATUS, w_length=2)
+    assert _control_response(device, setup) == b"\x01\x00"
