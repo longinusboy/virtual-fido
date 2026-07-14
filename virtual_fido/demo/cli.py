@@ -185,10 +185,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     )
     control.start()
 
-    # CCID smartcard interface. Applets (OATH/PIV) are added in later phases;
-    # for now the reader enumerates and answers power-on/status so pcscd sees
-    # a card, and SELECT of any applet AID returns "file not found".
-    ccid_interface = CCIDInterface(applets=[])
+    # CCID smartcard interface with the OATH applet. Credentials live in the
+    # vault; the applet persists changes (PUT/DELETE/RESET) back through the
+    # client. PIV is added in a later phase.
+    from virtual_fido.applets.oath import OATHApplet
+
+    oath_applet = OATHApplet(client.oath_state, client.save_oath_state)
+    ccid_interface = CCIDInterface(applets=[oath_applet])
 
     print(f"Serving USB/IP on {args.bind}:{args.port}")
     print(

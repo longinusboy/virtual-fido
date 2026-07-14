@@ -57,6 +57,9 @@ SW_UNKNOWN = 0x6F00
 
 INS_SELECT = 0xA4
 INS_GET_RESPONSE = 0xC0
+# ykoath continues a chained response with SEND REMAINING (0xA5) instead of the
+# ISO GET RESPONSE (0xC0); treat both as "return the next chunk".
+INS_SEND_REMAINING = 0xA5
 
 # CCID functional descriptor (bDescriptorType 0x21), 54 bytes. dwFeatures
 # advertises short+extended APDU-level exchange (0x00040000) so the host hands
@@ -206,7 +209,7 @@ class SmartCard:
         except ValueError:
             return sw_bytes(SW_WRONG_LENGTH)
 
-        if apdu.cla & ~0x10 == 0x00 and apdu.ins == INS_GET_RESPONSE:
+        if apdu.cla & ~0x10 == 0x00 and apdu.ins in (INS_GET_RESPONSE, INS_SEND_REMAINING):
             return self._get_response(apdu.le)
 
         if apdu.ins == INS_SELECT and apdu.p1 == 0x04:

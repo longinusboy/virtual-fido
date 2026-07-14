@@ -93,6 +93,8 @@ class DefaultFIDOClient:
         self.vault = IdentityVault()
         # OTP slots: {slot_number: opaque JSON dict owned by the otp module}.
         self.otp_slots: dict[int, dict] = {}
+        # OATH applet state: opaque JSON dict owned by the ccid/oath module.
+        self.oath_state: dict = {}
         self._request_approver = request_approver
         self._data_saver = data_saver
         self._load_data()
@@ -239,6 +241,7 @@ class DefaultFIDOClient:
             pin_hash=self._pin_hash or b"",
             sources=self.vault.export(),
             otp_slots={str(n): obj for n, obj in self.otp_slots.items()},
+            oath=self.oath_state,
         )
         return identities.encrypt_fido_state(state, passphrase, keyfile)
 
@@ -266,9 +269,15 @@ class DefaultFIDOClient:
         self.vault = IdentityVault()
         self.vault.import_sources(state.sources)
         self.otp_slots = {int(n): obj for n, obj in (state.otp_slots or {}).items()}
+        self.oath_state = state.oath or {}
 
     def set_otp_slot(self, slot_number: int, slot_obj: dict) -> None:
         self.otp_slots[slot_number] = slot_obj
+        self._save_data()
+
+    def save_oath_state(self, state: dict) -> None:
+        """Persist OATH applet state (called by the applet on mutations)."""
+        self.oath_state = state
         self._save_data()
 
     def reload_otp_slots(self) -> dict[int, dict]:
