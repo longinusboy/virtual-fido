@@ -184,6 +184,7 @@ class FIDODeviceConfig:
     # Keyed by slot/credential; opaque JSON owned by the respective subsystem.
     otp_slots: dict = field(default_factory=dict)
     oath: dict = field(default_factory=dict)  # CCID OATH applet state
+    piv: dict = field(default_factory=dict)  # CCID PIV applet state
 
 
 class VaultDecryptionError(Exception):
@@ -330,6 +331,8 @@ def encrypt_fido_state(
         obj["otp_slots"] = state.otp_slots
     if state.oath:
         obj["oath"] = state.oath
+    if state.piv:
+        obj["piv"] = state.piv
     return encrypt_with_passphrase(passphrase, json.dumps(obj).encode(), keyfile)
 
 
@@ -347,6 +350,7 @@ def decrypt_fido_state(
         sources=obj.get("sources", []) or [],
         otp_slots=obj.get("otp_slots", {}) or {},
         oath=obj.get("oath", {}) or {},
+        piv=obj.get("piv", {}) or {},
     )
 
 

@@ -49,7 +49,7 @@ USBIPServer (usbip.py)       TCP, USB/IP protocol; bind address configurable
      ├─ FidoHIDInterface (fido_hid.py)  CTAPHID transport (wraps CTAPHIDServer)
      └─ CCIDInterface (ccid.py)         smartcard; APDU dispatch -> applets
         ├─ OATHApplet (applets/oath.py) ykoath TOTP/HOTP
-        └─ PIV applet (applets/piv.py — later phase)
+        └─ PIVApplet (applets/piv.py)   PIV keys/certs, sign/decrypt
       └─ CTAPHIDServer (ctap_hid.py)   packets → transactions → channels; keepalives
           ├─ CTAPServer (ctap.py)      FIDO2/CTAP2 (CBOR via cbor2)
           └─ U2FServer (u2f.py)        U2F/CTAP1

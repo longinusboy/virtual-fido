@@ -165,8 +165,24 @@ ykman oath accounts code demo:alice  # prints the current TOTP
 ```
 
 Credentials survive restarts (persisted in the vault) and stay in sync with a
-running server. **PIV is still being added** — `SELECT` of the PIV AID returns
-"file not found" until then.
+running server.
+
+**PIV** (smartcard certificates/keys) is implemented too — key slots 9A/9C/9D/9E,
+PIN/PUK, 3DES management key, on-device RSA/ECC key generation, signing and RSA
+decryption, and certificate storage. Use it from the client with `ykman piv` or
+OpenSC:
+
+```bash
+ykman piv info
+ykman piv keys generate 9a pub.pem          # generate on-device (prompts mgmt key)
+ykman piv certificates generate 9a pub.pem --subject "CN=me"
+ykman piv keys generate --algorithm ECCP256 9c pub9c.pem
+```
+
+Defaults match a stock YubiKey: PIN `123456`, PUK `12345678`, 3DES management
+key `010203...` (the device reports 3DES via metadata). Keys and certs persist
+in the vault. Note: only the USB/PIV protocol is emulated — there's no physical
+touch, so touch-policy prompts don't apply.
 
 ## Device identity
 

@@ -185,13 +185,14 @@ def cmd_start(args: argparse.Namespace) -> None:
     )
     control.start()
 
-    # CCID smartcard interface with the OATH applet. Credentials live in the
-    # vault; the applet persists changes (PUT/DELETE/RESET) back through the
-    # client. PIV is added in a later phase.
+    # CCID smartcard interface with the OATH and PIV applets. State lives in
+    # the vault; each applet persists changes back through the client.
     from virtual_fido.applets.oath import OATHApplet
+    from virtual_fido.applets.piv import PIVApplet
 
     oath_applet = OATHApplet(client.oath_state, client.save_oath_state)
-    ccid_interface = CCIDInterface(applets=[oath_applet])
+    piv_applet = PIVApplet(client.piv_state, client.save_piv_state)
+    ccid_interface = CCIDInterface(applets=[oath_applet, piv_applet])
 
     print(f"Serving USB/IP on {args.bind}:{args.port}")
     print(

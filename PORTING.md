@@ -16,6 +16,7 @@ the Windows/Linux USB/IP clients).
 | —             | `virtual_fido/control.py`   | Local Unix-socket control channel used to trigger OTP typing (`otp type`). |
 | —             | `virtual_fido/ccid.py`      | CCID smartcard interface: bulk + interrupt(notify) endpoints, CCID message layer, ISO 7816-4 APDU parse + SELECT-by-AID applet routing + GET RESPONSE/SEND REMAINING chaining (no Go equivalent). |
 | —             | `virtual_fido/applets/oath.py` | OATH applet (ykoath protocol): TOTP/HOTP PUT/DELETE/LIST/CALCULATE/VALIDATE, persisted in the vault `oath` section (no Go equivalent). |
+| —             | `virtual_fido/applets/piv.py` | PIV applet (NIST SP 800-73 / YubiKey PIV): slots 9A/9C/9D/9E, PIN/PUK, 3DES mgmt-key mutual auth, RSA/ECC generate + sign + decrypt, GET/PUT DATA; persisted in the vault `piv` section (no Go equivalent). |
 | `ctap_hid/`   | `virtual_fido/ctap_hid.py`  | Packet reassembly → transactions → channels; keepalives. |
 | `ctap/`       | `virtual_fido/ctap.py`      | CTAP2 (CBOR) command handling. **Extends Go**: PIN/UV auth protocols 1 *and* 2 + permissions-based token (subcommand 0x09), advertising FIDO_2_1, so modern browsers' PIN flow works. |
 | —             | `virtual_fido/pin_protocol.py` | PIN/UV auth protocol 1 & 2 primitives (no Go equivalent — Go only did protocol 1 inline). |
