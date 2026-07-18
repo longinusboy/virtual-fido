@@ -9,10 +9,10 @@ Two slot types are supported:
     CRC), AES-128-ECB encrypted and emitted as public-id ‖ 32 ModHex chars.
   - Static password: a fixed string typed verbatim.
 
-Caveat: HID keyboards send *keycodes*, and the host maps keycodes to
-characters using its keyboard layout. Yubico's ModHex alphabet
-(`cbdefghijklnrtuv`) is chosen to land on the same letters across most
-layouts; arbitrary static passwords with symbols are layout-sensitive.
+Caveat: HID keyboards send *key positions*, and the host maps positions to
+characters using its active keyboard layout — the device cannot know which.
+Typing therefore uses a per-layout position table (keyboard_layouts.py,
+generated from xkb data); pick the one matching the client with `--layout`.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from typing import Callable, Optional
 
 from . import crypto
 from ._util import RequestBuffer
+from .keyboard_layouts import LAYOUTS
 from .usb import (
     ATTR_INTERRUPT,
     DIR_IN,
@@ -65,28 +66,7 @@ KEYBOARD_REPORT_DESCRIPTOR = bytes(
     ]
 )
 
-_MOD_SHIFT = 0x02
-_KEY_ENTER = 0x28
-
-# Minimal US-layout keycode map (enough for ModHex + typical static passwords).
-_KEYCODES: dict[str, tuple[int, int]] = {}
-for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
-    _KEYCODES[_c] = (0x04 + _i, 0)
-    _KEYCODES[_c.upper()] = (0x04 + _i, _MOD_SHIFT)
-for _i, _c in enumerate("1234567890"):
-    _KEYCODES[_c] = (0x1E + _i, 0)
-_KEYCODES.update(
-    {
-        "\n": (_KEY_ENTER, 0),
-        " ": (0x2C, 0),
-        "-": (0x2D, 0),
-        "_": (0x2D, _MOD_SHIFT),
-        "=": (0x2E, 0),
-        "+": (0x2E, _MOD_SHIFT),
-        ".": (0x37, 0),
-        "/": (0x38, 0),
-    }
-)
+DEFAULT_LAYOUT = "qwerty"
 
 
 def modhex_encode(data: bytes) -> str:
@@ -125,15 +105,25 @@ def crc16(data: bytes) -> int:
 CRC_RESIDUAL_OK = 0xF0B8
 
 
-def keyboard_reports(text: str) -> list[bytes]:
-    """Key-down + key-up report pairs that 'type' `text` (8-byte reports)."""
+def keyboard_reports(text: str, layout: str = DEFAULT_LAYOUT) -> list[bytes]:
+    """Key-down + key-up report pairs that 'type' `text` (8-byte reports),
+    using the key positions of the client's `layout`. Raises ValueError —
+    before emitting anything — if the layout is unknown or any character has
+    no position in it, so a password is never typed partially."""
+    keycodes = LAYOUTS.get(layout)
+    if keycodes is None:
+        raise ValueError(
+            f"Unknown keyboard layout {layout!r} (available: {', '.join(sorted(LAYOUTS))})"
+        )
+    untypeable = sorted({c for c in text if c not in keycodes})
+    if untypeable:
+        raise ValueError(
+            f"Cannot type {''.join(untypeable)!r} on layout {layout!r}"
+        )
     reports = []
     release = bytes(8)
     for char in text:
-        keycode, modifier = _KEYCODES.get(char, (0, 0))
-        if keycode == 0:
-            logger.warning("OTP: no keycode for %r, skipping", char)
-            continue
+        keycode, modifier = keycodes[char]
         reports.append(bytes([modifier, 0, keycode, 0, 0, 0, 0, 0]))
         reports.append(release)  # release between keys (and repeats)
     return reports
@@ -208,9 +198,14 @@ class OTPKeyboardInterface(USBInterface):
     interface_string = None
     endpoint_specs = [EndpointSpec(is_in=True, attributes=ATTR_INTERRUPT, max_packet_size=8, interval=10)]
 
-    def __init__(self, slots: Optional[dict[int, OTPSlot]] = None) -> None:
+    def __init__(
+        self,
+        slots: Optional[dict[int, OTPSlot]] = None,
+        layout: str = DEFAULT_LAYOUT,
+    ) -> None:
         self._buffer = RequestBuffer()
         self.slots: dict[int, OTPSlot] = slots or {}
+        self.layout = layout  # client keyboard layout, per-call overridable
 
     def class_descriptors(self) -> bytes:
         from .usb import hid_descriptor
@@ -242,11 +237,11 @@ class OTPKeyboardInterface(USBInterface):
     # Emitting output (called from the control channel)
     # ------------------------------------------------------------------
 
-    def type_string(self, text: str) -> None:
-        for report in keyboard_reports(text):
+    def type_string(self, text: str, layout: Optional[str] = None) -> None:
+        for report in keyboard_reports(text, layout or self.layout):
             self._buffer.respond(report)
 
-    def type_otp(self, slot_number: int) -> None:
+    def type_otp(self, slot_number: int, layout: Optional[str] = None) -> None:
         slot = self.slots.get(slot_number)
         if slot is None:
             raise KeyError(f"OTP slot {slot_number} is not configured")
@@ -255,4 +250,4 @@ class OTPKeyboardInterface(USBInterface):
         else:
             output = slot.password + "\n"
         logger.info("Typing OTP from slot %d (%d chars)", slot_number, len(output))
-        self.type_string(output)
+        self.type_string(output, layout)

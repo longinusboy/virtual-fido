@@ -5,7 +5,7 @@ import struct
 
 import pytest
 
-from virtual_fido import crypto, otp, usb
+from virtual_fido import crypto, keyboard_layouts, otp, usb
 
 
 def test_modhex_roundtrip():
@@ -132,3 +132,81 @@ def test_interface_report_descriptor_and_class():
     assert interface.report_descriptor() == otp.KEYBOARD_REPORT_DESCRIPTOR
     assert len(interface.endpoint_specs) == 1
     assert interface.endpoint_specs[0].is_in
+
+
+# ---------------------------------------------------------------------------
+# Keyboard layouts
+# ---------------------------------------------------------------------------
+
+
+def _decode_reports(reports, layout):
+    """Inverse of keyboard_reports: what a host running `layout` would see."""
+    inverse = {v: k for k, v in keyboard_layouts.LAYOUTS[layout].items()}
+    out = []
+    for report in reports:
+        if report == bytes(8):
+            continue  # release
+        out.append(inverse[(report[2], report[0])])
+    return "".join(out)
+
+
+def test_layouts_roundtrip_modhex_everywhere():
+    """A ModHex OTP + Enter must type correctly under every shipped layout."""
+    text = "cbdefghijklnrtuv" * 2 + "\n"
+    for layout in keyboard_layouts.LAYOUTS:
+        reports = otp.keyboard_reports(text, layout)
+        assert _decode_reports(reports, layout) == text, layout
+
+
+def test_layouts_roundtrip_static_password():
+    text = "Tr0ub4dor&3 _-+=!\n"
+    for layout in keyboard_layouts.LAYOUTS:
+        reports = otp.keyboard_reports(text, layout)
+        assert _decode_reports(reports, layout) == text, layout
+
+
+def test_colemak_dh_positions():
+    # 'e' sits on the QWERTY-k position (0x0E), 'd' on QWERTY-c (0x06)
+    reports = otp.keyboard_reports("ed", "colemak-dh")
+    assert reports[0][2] == 0x0E
+    assert reports[2][2] == 0x06
+
+
+def test_colemak_dh_iso_z_on_lsgt():
+    # ISO angle mod: 'z' lives on the extra ISO key (HID usage 0x64)
+    reports = otp.keyboard_reports("z", "colemak-dh-iso")
+    assert reports[0][2] == 0x64
+    # ...but on ANSI Colemak-DH it's on the QWERTY-b position
+    reports = otp.keyboard_reports("z", "colemak-dh")
+    assert reports[0][2] == 0x05
+
+
+def test_azerty_digits_need_shift():
+    reports = otp.keyboard_reports("1", "azerty")
+    assert reports[0][0] == keyboard_layouts.MOD_SHIFT
+    assert reports[0][2] == 0x1E
+
+
+def test_unknown_layout_raises():
+    with pytest.raises(ValueError, match="Unknown keyboard layout"):
+        otp.keyboard_reports("abc", "workman")
+
+
+def test_untypeable_char_raises_before_typing():
+    # QWERTZ has no plain-ASCII position for some chars; a password containing
+    # one must fail as a whole, never be typed partially.
+    bad = next(c for c in map(chr, range(0x20, 0x7F))
+               if c not in keyboard_layouts.LAYOUTS["qwertz"])
+    with pytest.raises(ValueError, match="Cannot type"):
+        otp.keyboard_reports(f"good{bad}tail", "qwertz")
+
+
+def test_interface_layout_default_and_override():
+    interface = otp.OTPKeyboardInterface({}, layout="colemak-dh")
+    reports = []
+    interface._buffer.respond = reports.append
+    interface.type_string("e")  # uses interface default layout
+    assert reports[0][2] == 0x0E  # colemak-dh 'e' position
+    reports.clear()
+    interface.type_string("e", layout="qwerty")  # per-call override
+    assert reports[0][2] == 0x08  # qwerty 'e' position

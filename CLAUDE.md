@@ -59,7 +59,9 @@ USBIPServer (usbip.py)       TCP, USB/IP protocol; bind address configurable
 Supporting modules: `crypto.py` (ECDSA/Ed25519/AES-GCM/AES-CBC/ECDH via
 `cryptography`), `pin_protocol.py` (PIN/UV auth protocols 1 and 2 — shared
 secret derivation, encrypt/decrypt, authenticate), `cose.py` (COSE key
-encode/decode, ES256 + Ed25519),
+encode/decode, ES256 + Ed25519), `keyboard_layouts.py` (OTP typing tables per
+client layout — GENERATED, edit `tools/gen_keyboard_layouts.py` and re-run it
+instead),
 `identities.py` (vault, attestation certs, scrypt+AES-GCM encrypted saved
 state), `webauthn.py` (shared structs with CBOR + JSON serializations),
 `_util.py` (`RequestBuffer`, timers, C-string helpers).

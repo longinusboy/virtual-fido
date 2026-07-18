@@ -142,10 +142,48 @@ uv run virtual-fido-demo --vault vault.json otp type --slot 1 --delay 3
 `otp type` talks to the running server over a local Unix control socket
 (default under `$XDG_RUNTIME_DIR`, keyed by vault; override with
 `--control-socket`). Slots provisioned while the server is running are picked
-up automatically (no restart needed). Caveat: HID keyboards send *keycodes*, so
-what gets typed depends on the client's keyboard layout — Yubico's ModHex
-alphabet is chosen to be layout-stable, but arbitrary static passwords with
-symbols are not. Aim `otp type` at a plain text field, not your terminal.
+up automatically (no restart needed). Aim `otp type` at a plain text field,
+not your terminal.
+
+### Keyboard layouts
+
+HID keyboards send *key positions*, and the client maps positions to
+characters using its active layout — so the server must "type" the positions
+that produce the right characters *under the client's layout* (real YubiKeys
+have the same limitation). Supported layouts: `qwerty` (default), `qwertz`,
+`azerty` (French), `dvorak`, `colemak`, `colemak-dh` (ANSI), `colemak-dh-iso`.
+The tables are generated from the xkb database
+(`tools/gen_keyboard_layouts.py`).
+
+```bash
+# Set the default for the attached client at startup...
+uv run virtual-fido-demo --vault vault.json start --layout colemak-dh
+
+# ...or override per invocation
+uv run virtual-fido-demo --vault vault.json otp type --slot 1 --layout azerty
+```
+
+If a static password contains a character the selected layout cannot produce,
+`otp type` fails as a whole (nothing is typed partially).
+
+**Alternative: force US layout for just this device on the client.** This
+makes typing layout-agnostic (the default `qwerty` table is then always
+correct), at the cost of a one-time client config. On X11, drop this into
+`/etc/X11/xorg.conf.d/99-yubikey-us.conf`:
+
+```
+Section "InputClass"
+    Identifier   "YubiKey OTP uses US layout"
+    MatchUSBID   "1050:0407"
+    MatchIsKeyboard "on"
+    Option       "XkbLayout"  "us"
+    Option       "XkbVariant" ""
+EndSection
+```
+
+On KDE Wayland, per-device layouts can be assigned in System Settings →
+Keyboard. GNOME Wayland has no per-device layout setting — use `--layout`
+there.
 
 ## CCID (smartcard)
 

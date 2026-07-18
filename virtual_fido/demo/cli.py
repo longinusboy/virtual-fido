@@ -23,6 +23,7 @@ from typing import Optional
 
 import virtual_fido
 from virtual_fido import identities
+from virtual_fido.keyboard_layouts import LAYOUTS as KEYBOARD_LAYOUTS
 from virtual_fido.fido_client import (
     ClientAction,
     ClientActionRequestParams,
@@ -169,15 +170,16 @@ def cmd_start(args: argparse.Namespace) -> None:
             int(n): OTPSlot.from_json_obj(obj) for n, obj in client.otp_slots.items()
         }
 
-    otp_interface = OTPKeyboardInterface(load_slots())
+    otp_interface = OTPKeyboardInterface(load_slots(), layout=args.layout)
 
     def handle_otp_type(command_args: list) -> str:
         slot = int(command_args[0]) if command_args else 1
+        layout = command_args[1] if len(command_args) > 1 else None
         # Re-read the vault so slots provisioned after the server started are
         # picked up without a restart.
         client.reload_otp_slots()
         otp_interface.slots = load_slots()
-        otp_interface.type_otp(slot)
+        otp_interface.type_otp(slot, layout)
         return f"typed slot {slot}"
 
     control = ControlServer(
@@ -313,8 +315,11 @@ def cmd_otp_type(args: argparse.Namespace) -> None:
     if delay:
         print(f"Focus the target field... typing slot {args.slot} in {delay:g}s")
         time.sleep(delay)
+    command = f"otp-type {args.slot}"
+    if args.layout:
+        command += f" {args.layout}"
     try:
-        response = send_command(path, f"otp-type {args.slot}")
+        response = send_command(path, command)
     except (FileNotFoundError, ConnectionRefusedError):
         print(f"No running server at control socket {path}", file=sys.stderr)
         sys.exit(1)
@@ -376,6 +381,14 @@ def main(argv: Optional[list[str]] = None) -> None:
         help="Address to bind (use the tunnel interface IP for remote use)",
     )
     start_parser.add_argument("--port", type=int, default=3240)
+    start_parser.add_argument(
+        "--layout",
+        choices=sorted(KEYBOARD_LAYOUTS),
+        default="qwerty",
+        help="Keyboard layout active on the client machine, used when the OTP "
+        "interface 'types' (default: qwerty; override per call with "
+        "`otp type --layout`)",
+    )
     identity = start_parser.add_argument_group(
         "device identity", "USB identity announced to the host (defaults: YubiKey 5)"
     )
@@ -421,6 +434,13 @@ def main(argv: Optional[list[str]] = None) -> None:
         type=float,
         default=3.0,
         help="Seconds to wait before typing, to focus the target field (default 3)",
+    )
+    otp_type.add_argument(
+        "--layout",
+        choices=sorted(KEYBOARD_LAYOUTS),
+        default=None,
+        help="Client keyboard layout for this invocation (default: the "
+        "running server's --layout setting)",
     )
     otp_type.set_defaults(func=cmd_otp_type)
 
