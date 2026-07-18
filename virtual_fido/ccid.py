@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Optional
 
 from ._util import RequestBuffer
@@ -178,6 +178,8 @@ class SmartCard:
         self.selected: Optional[Applet] = None
         self._pending = b""  # response tail awaiting GET RESPONSE
         self._pending_sw = SW_SUCCESS
+        self._chain = b""  # command data accumulated across CLA-0x10 chained APDUs
+        self._chain_header = None  # (ins, p1, p2) of the chain in progress
 
     # ---- CCID message layer -------------------------------------------
 
@@ -208,6 +210,24 @@ class SmartCard:
             apdu = APDU.parse(raw)
         except ValueError:
             return sw_bytes(SW_WRONG_LENGTH)
+
+        # ISO 7816-4 command chaining: CLA bit 0x10 marks a non-final chunk of
+        # a command too long for one APDU (OpenSC sends >255-byte commands this
+        # way; ykman uses extended length instead). Accumulate until the final
+        # chunk (bit clear), then dispatch the reassembled command. A header
+        # change aborts an unfinished chain, as on a real card.
+        header = (apdu.ins, apdu.p1, apdu.p2)
+        if self._chain and header != self._chain_header:
+            self._chain = b""
+            self._chain_header = None
+        if apdu.cla & 0x10:
+            self._chain += apdu.data
+            self._chain_header = header
+            return sw_bytes(SW_SUCCESS)
+        if self._chain:
+            apdu = replace(apdu, data=self._chain + apdu.data)
+            self._chain = b""
+            self._chain_header = None
 
         if apdu.cla & ~0x10 == 0x00 and apdu.ins in (INS_GET_RESPONSE, INS_SEND_REMAINING):
             return self._get_response(apdu.le)

@@ -172,17 +172,41 @@ PIN/PUK, 3DES management key, on-device RSA/ECC key generation, signing and RSA
 decryption, and certificate storage. Use it from the client with `ykman piv` or
 OpenSC:
 
+Defaults match a stock YubiKey: PIN `123456`, PUK `12345678`, 3DES management
+key `010203...` (the device reports 3DES via metadata). The PIV PIN is separate
+from the FIDO2 PIN (`pin set` in the demo CLI) — change it with
+`ykman piv access change-pin`. Keys and certs persist in the vault. Note: only
+the USB/PIV protocol is emulated — there's no physical touch, so touch-policy
+prompts don't apply.
+
+Example workflow (all on the client, with the device attached):
+
 ```bash
+# Change the well-known defaults first
+ykman piv access change-pin        # old PIN: 123456
+ykman piv access change-puk        # old PUK: 12345678
+ykman piv access change-management-key   # old key: blank prompt = default
+
+# Generate a key on-device in slot 9A (PIV Authentication) + self-signed cert
 ykman piv info
-ykman piv keys generate 9a pub.pem          # generate on-device (prompts mgmt key)
+ykman piv keys generate 9a pub.pem
 ykman piv certificates generate 9a pub.pem --subject "CN=me"
-ykman piv keys generate --algorithm ECCP256 9c pub9c.pem
+
+# The key/cert are now visible through OpenSC's PKCS#11 module
+pkcs11-tool --list-objects               # public objects
+pkcs11-tool -l --list-objects            # + private key (prompts PIN)
+
+# Sign a file through PKCS#11 and verify the signature with openssl
+echo "hello world" > msg.txt
+pkcs11-tool -l --sign --mechanism SHA256-RSA-PKCS --id 01 -i msg.txt -o msg.sig
+ykman piv certificates export 9a cert.pem
+openssl x509 -in cert.pem -noout -pubkey > pub_from_cert.pem
+openssl dgst -sha256 -verify pub_from_cert.pem -signature msg.sig msg.txt
+# -> Verified OK
 ```
 
-Defaults match a stock YubiKey: PIN `123456`, PUK `12345678`, 3DES management
-key `010203...` (the device reports 3DES via metadata). Keys and certs persist
-in the vault. Note: only the USB/PIV protocol is emulated — there's no physical
-touch, so touch-policy prompts don't apply.
+(OpenSC maps PIV slot 9A to PKCS#11 object ID `01`; slots 9C/9D/9E map to
+`02`/`03`/`04`.)
 
 ## Device identity
 

@@ -183,6 +183,51 @@ def test_generate_rsa_and_sign():
     public_key.verify(signature, b"rsa message", padding.PKCS1v15(), hashes.SHA256())
 
 
+def test_rsa_sign_via_command_chaining():
+    """OpenSC sends >255-byte commands as ISO 7816 chained short APDUs
+    (CLA 0x10) rather than extended length; the card must reassemble them."""
+    card, _ = make_card()
+    authenticate_mgmt(card)
+    pubkey_tlv = generate_key(card, 0x9A, piv.ALG_RSA_2048)
+    tlvs = piv.parse_ber(pubkey_tlv)
+    public_key = rsa.RSAPublicNumbers(
+        int.from_bytes(piv.find_tag(tlvs, piv.TAG_RSA_EXPONENT), "big"),
+        int.from_bytes(piv.find_tag(tlvs, piv.TAG_RSA_MODULUS), "big"),
+    ).public_key()
+
+    verify_pin(card)
+    digest = hashlib.sha256(b"chained message").digest()
+    digest_info = bytes.fromhex("3031300d060960864801650304020105000420") + digest
+    padded = b"\x00\x01" + b"\xff" * (256 - len(digest_info) - 3) + b"\x00" + digest_info
+    auth = piv.ber_tlv(
+        piv.TAG_DYN_AUTH,
+        piv.ber_tlv(piv.TAG_AUTH_RESPONSE, b"") + piv.ber_tlv(piv.TAG_AUTH_CHALLENGE, padded),
+    )
+    # Send in 255-byte chunks: CLA 0x10 on all but the last APDU.
+    chunks = [auth[i : i + 255] for i in range(0, len(auth), 255)]
+    for chunk in chunks[:-1]:
+        resp = card.process_apdu_bytes(
+            bytes([0x10, piv.INS_GENERAL_AUTHENTICATE, piv.ALG_RSA_2048, 0x9A, len(chunk)])
+            + chunk
+        )
+        assert resp == ccid.sw_bytes(ccid.SW_SUCCESS)
+    resp = card.process_apdu_bytes(
+        bytes([0x00, piv.INS_GENERAL_AUTHENTICATE, piv.ALG_RSA_2048, 0x9A, len(chunks[-1])])
+        + chunks[-1]
+    )
+    body, sw = resp[:-2], int.from_bytes(resp[-2:], "big")
+    while sw >> 8 == 0x61:
+        resp = card.process_apdu_bytes(apdu(ccid.INS_GET_RESPONSE))
+        body += resp[:-2]
+        sw = int.from_bytes(resp[-2:], "big")
+    assert sw == ccid.SW_SUCCESS
+    signature = piv.find_tag(
+        piv.parse_ber(piv.find_tag(piv.parse_ber(body), piv.TAG_DYN_AUTH)),
+        piv.TAG_AUTH_RESPONSE,
+    )
+    public_key.verify(signature, b"chained message", padding.PKCS1v15(), hashes.SHA256())
+
+
 def test_rsa_decrypt():
     card, _ = make_card()
     authenticate_mgmt(card)

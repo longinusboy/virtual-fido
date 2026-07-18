@@ -229,6 +229,7 @@ class PIVApplet(Applet):
         if apdu.data == _pad_pin(self._state["pin"]):
             self._pin_verified = True
             self._state["pin_retries"] = DEFAULT_RETRIES
+            self._persist()
             return b"", SW_SUCCESS
         self._state["pin_retries"] -= 1
         self._persist()
