@@ -1,4 +1,4 @@
-"""USB device descriptor + routing tests (port of usb/usb_device_test.go,
+"""USB device descriptor + routing tests (port of upstream usb/usb_device_test.go,
 adapted for the multi-interface USBDevice)."""
 
 import struct

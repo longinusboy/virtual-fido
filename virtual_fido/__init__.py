@@ -1,7 +1,7 @@
 """Virtual FIDO2/U2F authenticator exposed as a USB device over USB/IP.
 
-Python port of github.com/bulwarkid/virtual-fido (the Go code in the
-repository root is the reference implementation).
+Python port of github.com/bulwarkid/virtual-fido (commit 512d8a3), whose
+Go code is the reference implementation for the ported layers.
 
 Usage:
     client = fido_client.DefaultFIDOClient(...)

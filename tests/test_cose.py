@@ -1,4 +1,4 @@
-"""Port of cose/cose_test.go (minus RSA), plus Go-interop vector checks."""
+"""Port of upstream cose/cose_test.go (minus RSA), plus Go-interop vector checks."""
 
 import cbor2
 import pytest

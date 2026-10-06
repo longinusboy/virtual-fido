@@ -1,4 +1,4 @@
-"""Port of ctap_hid/ctap_hid_test.go and transaction_test.go, plus keepalive
+"""Port of upstream ctap_hid/ctap_hid_test.go and transaction_test.go, plus keepalive
 coverage for the CBOR path."""
 
 import os

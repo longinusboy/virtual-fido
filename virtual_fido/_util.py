@@ -61,7 +61,7 @@ def start_recurring(interval: float, f: Callable[[], None]) -> Callable[[], None
 class RequestBuffer:
     """Pairs asynchronous data requests with responses.
 
-    Port of util/request_buffer.go: the USB interrupt-IN endpoint requests
+    Port of upstream util/request_buffer.go: the USB interrupt-IN endpoint requests
     data that may not exist yet; responses produced by the CTAPHID layer
     are buffered until a request arrives, and vice versa.
     """

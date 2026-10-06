@@ -62,7 +62,7 @@ def _unb64(value: Optional[str]) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Credential sources and the vault (identity_vault.go)
+# Credential sources and the vault (upstream identities/identity_vault.go)
 # ---------------------------------------------------------------------------
 
 
@@ -167,7 +167,7 @@ class IdentityVault:
 
 
 # ---------------------------------------------------------------------------
-# Encrypted saved state (saved_state.go)
+# Encrypted saved state (upstream identities/saved_state.go)
 # ---------------------------------------------------------------------------
 
 
@@ -355,7 +355,7 @@ def decrypt_fido_state(
 
 
 # ---------------------------------------------------------------------------
-# Attestation certificates (attestation.go)
+# Attestation certificates (upstream identities/attestation.go)
 # ---------------------------------------------------------------------------
 
 

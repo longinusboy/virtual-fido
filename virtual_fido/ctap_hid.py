@@ -91,7 +91,7 @@ def create_response_packets(channel_id: int, command: int, payload: bytes) -> li
 
 class Transaction:
     """Reassembles one or more HID packets into a single message
-    (ctap_hid/transaction.go)."""
+    (upstream ctap_hid/transaction.go)."""
 
     def __init__(self, message: bytes) -> None:
         self.done = False
@@ -172,7 +172,7 @@ class Transaction:
 
 
 class Channel:
-    """One logical CTAPHID connection (ctap_hid/channel.go)."""
+    """One logical CTAPHID connection (upstream ctap_hid/channel.go)."""
 
     def __init__(self, server: "CTAPHIDServer", channel_id: int) -> None:
         self._server = server
@@ -252,7 +252,7 @@ class Channel:
 
 class CTAPHIDServer:
     """Routes HID packets to channels and responses back to USB
-    (ctap_hid/ctap_hid.go)."""
+    (upstream ctap_hid/ctap_hid.go)."""
 
     def __init__(self, ctap_server: CTAPHIDService, u2f_server: CTAPHIDService) -> None:
         self.ctap_server = ctap_server

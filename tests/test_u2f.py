@@ -1,4 +1,4 @@
-"""Port of u2f/u2f_test.go, plus authenticate-flow coverage."""
+"""Port of upstream u2f/u2f_test.go, plus authenticate-flow coverage."""
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization

@@ -1,4 +1,4 @@
-"""Port of ctap/ctap_test.go, plus ClientPIN protocol coverage."""
+"""Port of upstream ctap/ctap_test.go, plus ClientPIN protocol coverage."""
 
 import hashlib
 

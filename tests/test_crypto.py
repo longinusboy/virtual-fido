@@ -1,4 +1,4 @@
-"""Port of crypto/crypto_test.go (minus RSA, which is not ported)."""
+"""Port of upstream crypto/crypto_test.go (minus RSA, which is not ported)."""
 
 from virtual_fido import crypto
 

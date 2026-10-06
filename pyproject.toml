@@ -1,18 +1,57 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "virtual-fido"
 version = "0.1.0"
-description = "Virtual FIDO2/U2F security key exposed as a USB device over USB/IP (Python port of bulwarkid/virtual-fido)"
+description = "Software YubiKey 5 (FIDO2/U2F, OTP, OATH, PIV) exposed as a USB device over USB/IP"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+# Python port and YubiKey emulation by David Silva, derived from the Go
+# implementation bulwarkid/virtual-fido (commit 512d8a3) by Chris de la
+# Iglesia (BulwarkID) and its contributors.
+authors = [
+    { name = "David Silva" },
+    { name = "Chris de la Iglesia" },
+    { name = "JeroenHD" },
+    { name = "Vladislav Doster" },
+]
+maintainers = [
+    { name = "David Silva" },
+]
+keywords = [
+    "fido2", "u2f", "webauthn", "ctap", "yubikey", "usbip", "security-key",
+    "piv", "oath", "totp", "otp", "smartcard",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Security :: Cryptography",
+    "Topic :: System :: Hardware :: Universal Serial Bus (USB)",
+]
 dependencies = [
     "cryptography>=42.0",
     "cbor2>=5.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/longinusboy/virtual-fido"
+Repository = "https://github.com/longinusboy/virtual-fido.git"
+Issues = "https://github.com/longinusboy/virtual-fido/issues"
+Upstream = "https://github.com/bulwarkid/virtual-fido"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

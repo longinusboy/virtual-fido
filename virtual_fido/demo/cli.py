@@ -1,6 +1,6 @@
 """Reference CLI: run the virtual FIDO device and manage its vault.
 
-Port of the Go cmd/demo. Everything about key management here is INSECURE
+Port of the upstream Go cmd/demo. Everything about key management here is INSECURE
 and for testing only — fresh self-signed CA per vault, hardcoded "test"
 encryption key, default passphrase. Do not copy into real deployments.
 
